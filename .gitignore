@@ -58,3 +58,4 @@ CMakeScripts/
 core.*
 *.dSYM/
 .DS_Store
+install/
