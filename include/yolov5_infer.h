@@ -13,9 +13,9 @@ typedef struct {
     // Tensor 属性
     rknn_tensor_attr* input_attrs;
     rknn_tensor_attr* output_attrs;
-    //零拷贝内存
-    rknn_tensor_mem*  input_mem;   
-    rknn_tensor_mem** output_mem;  
+    // //零拷贝内存
+    // rknn_tensor_mem*  input_mem;   
+    // rknn_tensor_mem** output_mem;  
     // 初始化状态
     bool inited;
     // 模型信息
@@ -23,6 +23,8 @@ typedef struct {
     int model_width;
     int model_height;
     bool is_quant;
+
+    image_buffer_t infer_buf;
 } rknn_app_context_t;
 
 #include "postprocess.h"

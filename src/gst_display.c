@@ -11,7 +11,7 @@ int gst_display_init(int width, int height)
     gchar *pipe_str = g_strdup_printf(
         "appsrc name=display_appsrc is-live=true format=GST_FORMAT_TIME ! "
         "video/x-raw,format=RGB,width=%d,height=%d,framerate=30/1 ! "
-        "videoconvert ! autovideosink sync=false",
+        "videoconvert ! videoscale ! autovideosink sync=false async=false",
         width, height
     );
 
@@ -43,12 +43,15 @@ void gst_display_push_rgb(int width, int height, uint8_t *rgb_data, size_t size)
             return;
     }
 
-    GstBuffer *buf = gst_buffer_new_wrapped_full(
-        GST_MEMORY_FLAG_READONLY,
-        rgb_data,
-        size, 0, size,
-        NULL, NULL
-    );
+    // 关键修复：创建缓冲区时拷贝数据，避免外部内存被释放
+    GstBuffer *buf = gst_buffer_new_allocate(NULL, size, NULL);
+    if (!buf) return;
+
+    GstMapInfo map;
+    if (gst_buffer_map(buf, &map, GST_MAP_WRITE)) {
+        memcpy(map.data, rgb_data, size);
+        gst_buffer_unmap(buf, &map);
+    }
 
     gst_app_src_push_buffer(GST_APP_SRC(g_display_appsrc), buf);
 }

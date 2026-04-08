@@ -100,6 +100,15 @@ int yolov5_init(rknn_app_context_t *ctx, const char *model_path)
         ctx->model_channel = ctx->input_attrs[0].dims[3];
     }
 
+    //分配一次模型输入内存
+    int buf_size = ctx->model_width * ctx->model_height * 3;
+    ctx->infer_buf.virt_addr = (uint8_t*)malloc(buf_size);
+    ctx->infer_buf.size = buf_size;
+    ctx->infer_buf.width = ctx->model_width;
+    ctx->infer_buf.height = ctx->model_height;
+    ctx->infer_buf.format = IMAGE_FORMAT_RGB888;
+
+
     printf("model input: H=%d W=%d C=%d\n", ctx->model_height, ctx->model_width, ctx->model_channel);
 
     // 初始化标签
@@ -110,15 +119,17 @@ int yolov5_init(rknn_app_context_t *ctx, const char *model_path)
 
 /*
  * 函数：yolov5_infer
- * 功能：完全对齐官方RKNN流程
  */
 int yolov5_infer(rknn_app_context_t *ctx,
                            image_buffer_t *img,
                            object_detect_result_list *od_results)
 {
+    if (ctx->infer_buf.virt_addr == NULL) {
+        printf("infer_buf not initialized\n");
+        return -1;
+    }
     int ret;
     letterbox_t letter_box;
-    image_buffer_t dst_img;
     rknn_input inputs[ctx->io_num.n_input];
     rknn_output outputs[ctx->io_num.n_output];
 
@@ -130,42 +141,28 @@ int yolov5_infer(rknn_app_context_t *ctx,
 
     memset(od_results, 0, sizeof(object_detect_result_list));
     memset(&letter_box, 0, sizeof(letterbox_t));
-    memset(&dst_img, 0, sizeof(image_buffer_t));
     memset(inputs, 0, sizeof(inputs));
     memset(outputs, 0, sizeof(outputs));
 
-    // 分配模型输入图像内存
-    dst_img.width   = ctx->model_width;
-    dst_img.height  = ctx->model_height;
-    dst_img.format  = IMAGE_FORMAT_RGB888;
-    dst_img.size    = get_image_size(&dst_img);
-    dst_img.virt_addr = (unsigned char*)malloc(dst_img.size);
-    if (!dst_img.virt_addr) {
-        printf("malloc dst_img fail!\n");
-        return -1;
-    }
+    image_buffer_t *dst_img = &ctx->infer_buf;
 
     // letterbox 缩放
-    ret = convert_image_with_letterbox(img, &dst_img, &letter_box, bg_color);
+    ret = convert_image_with_letterbox(img, dst_img, &letter_box, bg_color);
     if (ret < 0) {
         printf("convert_image_with_letterbox failed!\n");
-        free(dst_img.virt_addr);
         return -1;
     }
 
-    // ======================
-    // RKNN 官方标准输入设置
-    // ======================
+    // 标准输入设置
     inputs[0].index = 0;
     inputs[0].type  = RKNN_TENSOR_UINT8;
     inputs[0].fmt   = RKNN_TENSOR_NHWC;
-    inputs[0].size  = dst_img.size;
-    inputs[0].buf   = dst_img.virt_addr;
+    inputs[0].size  = dst_img->size;
+    inputs[0].buf   = dst_img->virt_addr;
 
     ret = rknn_inputs_set(ctx->rknn_ctx, ctx->io_num.n_input, inputs);
     if (ret < 0) {
         printf("rknn_inputs_set fail!\n");
-        free(dst_img.virt_addr);
         return -1;
     }
 
@@ -181,7 +178,6 @@ int yolov5_infer(rknn_app_context_t *ctx,
     ret = rknn_outputs_get(ctx->rknn_ctx, ctx->io_num.n_output, outputs, NULL);
     if (ret < 0) {
         printf("rknn_outputs_get fail!\n");
-        free(dst_img.virt_addr);
         return -1;
     }
 
@@ -190,9 +186,6 @@ int yolov5_infer(rknn_app_context_t *ctx,
 
     // 释放输出
     rknn_outputs_release(ctx->rknn_ctx, ctx->io_num.n_output, outputs);
-
-    // 释放内存
-    free(dst_img.virt_addr);
 
     return 0;
 }
@@ -205,6 +198,11 @@ void yolov5_release(rknn_app_context_t *ctx)
     if (!ctx->inited) return;
 
     // 释放资源
+    if (ctx->infer_buf.virt_addr) {
+        free(ctx->infer_buf.virt_addr);
+        ctx->infer_buf.virt_addr = NULL;
+    }
+
     free(ctx->input_attrs);
     free(ctx->output_attrs);
     rknn_destroy(ctx->rknn_ctx);
