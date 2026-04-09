@@ -43,7 +43,7 @@ void gst_display_push_rgb(int width, int height, uint8_t *rgb_data, size_t size)
             return;
     }
 
-    // 关键修复：创建缓冲区时拷贝数据，避免外部内存被释放
+    // 关键修复：创建缓冲区时拷贝数据，避免外部内存被释放!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     GstBuffer *buf = gst_buffer_new_allocate(NULL, size, NULL);
     if (!buf) return;
 

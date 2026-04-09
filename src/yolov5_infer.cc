@@ -53,6 +53,10 @@ int yolov5_init(rknn_app_context_t *ctx, const char *model_path)
     free(model_buf);
     CHECK(ret, "rknn_init");
 
+    rknn_core_mask core_mask=RKNN_NPU_CORE_ALL;
+    ret=rknn_set_core_mask(ctx->rknn_ctx,core_mask);
+    CHECK(ret, "rknn_set_core_mask");
+
     // ====================== 3. 查询输入输出数量 ======================
     ret = rknn_query(ctx->rknn_ctx, RKNN_QUERY_IN_OUT_NUM, &ctx->io_num, sizeof(ctx->io_num));
     CHECK(ret, "rknn_query_io_num");
@@ -107,7 +111,6 @@ int yolov5_init(rknn_app_context_t *ctx, const char *model_path)
     ctx->infer_buf.width = ctx->model_width;
     ctx->infer_buf.height = ctx->model_height;
     ctx->infer_buf.format = IMAGE_FORMAT_RGB888;
-
 
     printf("model input: H=%d W=%d C=%d\n", ctx->model_height, ctx->model_width, ctx->model_channel);
 

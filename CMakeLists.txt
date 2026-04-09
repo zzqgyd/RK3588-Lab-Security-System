@@ -38,11 +38,12 @@ link_directories(lib)
 
 # 源文件
 set(SOURCES
-    src/demo.cc
-    src/gst_decoder.c
+    src/demo.cpp
+    src/gst_decoder.cpp
     src/gst_display.c
     src/postprocess.cc
     src/yolov5_infer.cc
+    src/infer_thread.cpp
     utils/image_utils.c
     utils/file_utils.c
     utils/image_drawing.c

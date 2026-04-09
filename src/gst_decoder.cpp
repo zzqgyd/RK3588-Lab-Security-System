@@ -1,78 +1,93 @@
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
 #include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
 #include "gst_decoder.h"
 
-// 这些大写宏 = 安全的类型强制转换！
-// 为了兼容 GLib 面向对象体系
+#include "gst_decoder.h"
+#include "config.h"           
+#include "queue_manager.hpp"   // 队列管理器
+#include "common.h"
+#include "config.h"
 
-/* 解码器实例结构体：每路独立一份 */
+extern QueueManager* g_queue_manager;   ///< 在 demo.cpp 中定义
+
+// ============================================================================
+// 解码器实例结构体（对外隐藏,每路一份）
+// ============================================================================
 struct GstDecoder {
-    GstElement *pipeline;       // GStreamer管道对象
-    GstElement *appsink;        // 应用程序数据输出口
-    GstImageCallback callback;  // 图像数据回调函数
-    void *user_data;            // 实例指针
+    GstElement*      pipeline;     ///< GStreamer 管道对象
+    GstElement*      appsink;      ///< appsink 元素（数据出口）
+    GstImageCallback callback;     ///< 用户回调函数（已废弃，不再使用）
+    void*            user_data;    ///< 回调用户数据（实际存储 stream_id）
 };
 
 /**
- * @brief 当GStreamer解码出一帧数据时执行的回调函数
- * @param sink appsink元素指针
- * @param user_data 实例指针
- * @return 处理结果，返回GST_FLOW_OK表示处理成功
+ * @brief GStreamer appsink 的 new-sample 信号回调
+ * @param sink      appsink 元素
+ * @param user_data GstDecoder 实例指针
+ * @return GST_FLOW_OK 成功，GST_FLOW_ERROR 失败
+ * 
+ * 注意：此函数在 GStreamer streaming 线程中执行
+ * 职责：取出帧数据 → 封装 Frame → 入队 → 返回
+ * 不能做耗时操作！推理已移到 InferThread
  */
 static GstFlowReturn new_sample_cb(GstElement *sink, gpointer user_data)
 {
     GstDecoder *decoder = (GstDecoder *)user_data;
-    gint width, height;         // 图像宽度和高度
+    gint width=0, height=0;         // 图像宽度和高度
     const gchar *format;        // 图像格式
     GstSample *sample = NULL;   // 采样数据对象
     GstBuffer *buf = NULL;      // 图像缓冲区
     GstCaps *caps = NULL;       // 图像格式信息
     GstStructure *str = NULL;   // 图像结构信息
     GstMapInfo map;             // 内存映射信息
-    gpointer data = NULL;       // 图像数据指针
+
+    // 从 user_data 中取出 stream_id
+    int stream_id = (int)(intptr_t)decoder->user_data;
     
-    // 1. 从appsink中取出一帧数据
+    // ===== 1. 从 appsink 拉取一帧 Sample =====
     sample = gst_app_sink_pull_sample(GST_APP_SINK(sink));
     if (!sample) {
-        g_print("Error: Failed to pull sample from appsink\n");
+        g_printerr("[Decoder] Failed to pull sample, stream=%d\n", stream_id);
         return GST_FLOW_ERROR;
     }
     
-    // 2. 获取图像缓冲区
+    // ===== 2. 获取 Buffer（包含实际图像数据）=====
     buf = gst_sample_get_buffer(sample);
     if (!buf) {
-        g_print("Error: Failed to get buffer from sample\n");
+        g_printerr("[Decoder] Failed to get buffer, stream=%d\n", stream_id);
         gst_sample_unref(sample);
         return GST_FLOW_ERROR;
     }
     
-    // 3. 获取图像格式信息
+    // ===== 3. 获取 Caps（包含图像格式信息）=====
     caps = gst_sample_get_caps(sample);
     if (!caps) {
-        g_print("Error: Failed to get caps from sample\n");
+        g_printerr("[Decoder] Failed to get caps, stream=%d\n", stream_id);
         gst_sample_unref(sample);
         return GST_FLOW_ERROR;
     }
     
-    // 4. 获取图像结构信息
+    // ===== 4. 获取 Structure =====
     str = gst_caps_get_structure(caps, 0);
     if (!str) {
-        g_print("Error: Failed to get structure from caps\n");
+        g_printerr("[Decoder] Failed to get structure, stream=%d\n", stream_id);
         gst_sample_unref(sample);
         return GST_FLOW_ERROR;
     }
     
     // 5. 获取图像宽度
     if (!gst_structure_get_int(str, "width", &width)) {
-        g_print("Error: Failed to get width from structure\n");
+        g_print("Error: Failed to get width from structure, stream=%d\n", stream_id);
         gst_sample_unref(sample);
         return GST_FLOW_ERROR;
     }
     
     // 6. 获取图像高度
     if (!gst_structure_get_int(str, "height", &height)) {
-        g_print("Error: Failed to get height from structure\n");
+        g_print("Error: Failed to get height from structure, stream=%d\n", stream_id);
         gst_sample_unref(sample);
         return GST_FLOW_ERROR;
     }
@@ -80,46 +95,76 @@ static GstFlowReturn new_sample_cb(GstElement *sink, gpointer user_data)
     // 7. 获取图像格式
     format = gst_structure_get_string(str, "format");
     if (!format) {
-        g_print("Error: Failed to get format from structure\n");
+        g_print("Error: Failed to get format from structure, stream=%d\n", stream_id);
         gst_sample_unref(sample);
         return GST_FLOW_ERROR;
     }
     
-    // 8. 映射图像缓冲区到内存
+    // 8. 映射图像缓冲区到内存!!!!!!!!!!!!!!!!!!!!!!!!!
     if (!gst_buffer_map(buf, &map, GST_MAP_READ)) {
-        g_print("Error: Failed to map buffer\n");
+        g_print("Error: Failed to map buffer, stream=%d\n", stream_id);
         gst_sample_unref(sample);
         return GST_FLOW_ERROR;
     }
     
-    // 9. 获取图像数据指针
-    data = map.data;
-    
-    // 10. 调用用户回调函数处理图像数据
-    if (decoder->callback) {
-        decoder->callback(width, height, format, data, map.size, decoder->user_data);
-    } else {
-        // 如果没有设置回调，打印图像信息
-        g_print("width: %d, height: %d, format: %s, data size: %zu bytes\n", 
-                width, height, format, map.size);
+    // ===== 9. 创建 Frame 并入队 =====
+    Frame* frame = new Frame();
+    if (!frame) {
+        g_printerr("[Decoder] Failed to allocate Frame, stream=%d\n", stream_id);
+        gst_buffer_unmap(buf, &map);
+        gst_sample_unref(sample);
+        return GST_FLOW_ERROR;
     }
+
+    // 填充帧信息
+    frame->stream_id = stream_id;
+    frame->pts = 0;  // TODO: 从 GStreamer 获取真实 PTS!!!!!!!!!!!!!!!!!!!!!!
     
-    // 11. 解除内存映射
+    frame->img.width = width;
+    frame->img.height = height;
+    frame->img.width_stride = width;
+    frame->img.height_stride = height;
+    frame->img.format = IMAGE_FORMAT_RGB888;
+    frame->img.size = map.size;
+    frame->img.fd = -1;  // 暂无 DMA-BUF!!!!!!!!!!!!!!!!!!
+
+    // 分配内存并拷贝（临时方案，后续改为零拷贝/内存池）!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    frame->img.virt_addr = (unsigned char*)malloc(map.size);
+    memcpy(frame->img.virt_addr, map.data, map.size);
+    if (!frame->img.virt_addr) {
+        g_printerr("[Decoder] Failed to malloc image buffer, stream=%d, size=%zu\n", 
+                   stream_id, map.size);
+        delete frame;
+        gst_buffer_unmap(buf, &map);
+        gst_sample_unref(sample);
+        return GST_FLOW_ERROR;
+    }
+
+    // 入队（传递给推理线程）
+    SPSCQueue<Frame*, QUEUE_SIZE>& q = g_queue_manager->get_queue(stream_id);
+    if (!q.push(frame)) {
+        // 队列满，丢弃此帧（防止内存爆炸）
+        free(frame->img.virt_addr);
+        delete frame;
+    }
+
+
+    // 10. 解除内存映射
     gst_buffer_unmap(buf, &map);
     
-    // 12. 释放采样数据对象
+    // 11. 释放采样数据对象
     gst_sample_unref(sample);
     
-    // 13. 返回处理成功
+    // 12. 返回处理成功
     return GST_FLOW_OK;
 }
 
 /**
- * @brief 创建一个新的解码器实例（多路：每路一个）
- * @param rtsp_url RTSP流地址
- * @param callback 图像数据回调函数
- * @param user_data 回调用户数据
- * @return 实例指针
+ * @brief 创建解码器实例
+ * @param rtsp_url  RTSP 流地址
+ * @param callback  图像回调函数
+ * @param user_data 回调用户数据（传入 stream_id）
+ * @return 成功返回 GstDecoder*，失败返回 NULL
  */
 GstDecoder *gst_decoder_create(const gchar *rtsp_url, GstImageCallback callback, void *user_data)
 {
@@ -129,11 +174,13 @@ GstDecoder *gst_decoder_create(const gchar *rtsp_url, GstImageCallback callback,
     gchar *pipeline_str = NULL;
 
     // 1. 初始化解码器实例
-    decoder->callback = callback;
-    decoder->user_data = user_data;
+    decoder->callback = callback;      // 保留但不使用
+    decoder->user_data = user_data;    // 存储 stream_id
+
+    int stream_id = (int)(intptr_t)user_data;
 
     // 2. 构建GStreamer管道字符串
-    pipeline_str = g_strdup_printf("rtspsrc location=%s latency=200 ! "
+    pipeline_str = g_strdup_printf("rtspsrc location=%s latency=0 ! "
                                   "rtph264depay ! "
                                   "h264parse ! "
                                   "mppvideodec format=NV12 fast-mode=true arm-afbc=false ! "
@@ -171,6 +218,7 @@ GstDecoder *gst_decoder_create(const gchar *rtsp_url, GstImageCallback callback,
                      G_CALLBACK(new_sample_cb), decoder);
 
     // 7.返回解码器实例
+    g_print("[Decoder] Created stream %d: %s\n", stream_id, rtsp_url);
     return decoder;
 }
 
@@ -211,14 +259,19 @@ void gst_decoder_destroy(GstDecoder *dec)
 {
     if(!dec) return;
     
+    // 确保管道已停止
     gst_element_set_state(dec->pipeline, GST_STATE_NULL);
 
-    // 释放appsink元素
-    gst_object_unref(dec->appsink);
-    dec->appsink = NULL;
-    // 释放GStreamer管道资源
-    gst_object_unref(dec->pipeline);
-    dec->pipeline = NULL;
+    // 释放 appsink 引用
+    if (dec->appsink) {
+        gst_object_unref(dec->appsink);
+        dec->appsink = NULL;
+    }
+    // 释放管道引用
+    if (dec->pipeline) {
+        gst_object_unref(dec->pipeline);
+        dec->pipeline = NULL;
+    }
 
     // 释放解码器实例
     g_free(dec);
