@@ -22,10 +22,12 @@ struct Frame
 {
     image_buffer_t img;   // 直接复用你已有结构
     uint64_t pts;         // 时间戳（用于同步/丢帧策略）
+    uint64_t seq;         // 帧序号
     int stream_id;        // 哪一路流（多路必须有）
     Frame()
     {
         pts = 0;
+        seq = 0;
         stream_id = 0;
     }
 };

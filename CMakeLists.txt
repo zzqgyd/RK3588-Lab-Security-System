@@ -43,10 +43,12 @@ set(SOURCES
     src/gst_display.c
     src/postprocess.cc
     src/yolov5_infer.cc
-    src/infer_thread.cpp
+    src/scheduler.cpp
+    src/worker_pool.cpp
     utils/image_utils.c
     utils/file_utils.c
     utils/image_drawing.c
+    utils/drawing.cpp
 )
 
 add_executable(${PROJECT_NAME} ${SOURCES})

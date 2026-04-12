@@ -31,9 +31,15 @@
 #include "image_drawing.h"
 #include "common.h"
 
+// RGA 头文件
+#include "im2d.h"
+#include "RgaUtils.h"
+
 // 队列模块（C++）
 #include "queue_manager.hpp"
-#include "infer_thread.hpp"
+#include "mpmc_queue.hpp"
+#include "scheduler.hpp"
+#include "worker_pool.hpp"
 
 // 配置模块
 #include "config.h"
@@ -43,20 +49,26 @@
 // ============================================================================
 #define MAX_CHANNEL        4       ///< 最大支持流路数
 #define CONFIG_LINE_MAX    256     ///< 配置文件行最大长度
-#define CANVAS_W           1280    ///< 显示画布宽度
-#define CANVAS_H           960     ///< 显示画布高度
+#define CANVAS_W           3840    ///< 显示画布宽度
+#define CANVAS_H           2160     ///< 显示画布高度
+#define WORKER_NUM         3       ///< Worker 数量
 
 // ============================================================================
 // 全局变量
 // ============================================================================
 static volatile bool g_running = true;    ///< 程序运行标志（Ctrl+C 置 false）
 
+// 队列管理器
+QueueManager* g_queue_manager = nullptr;
+
+MPMCQueue<Frame*>* g_inference_queue = nullptr;
+Scheduler* g_scheduler = nullptr;
+WorkerPool* g_worker_pool = nullptr;
+
 // ===== 全局 C++ 对象指针 =====
-// 由于 demo.c 可能是纯 C，这里统一用 void* 存储，实际使用时强转
-// 如果确认为 C++ 编译，可以直接用具体类型
-QueueManager* g_queue_manager = nullptr;       ///< 队列管理器
-InferThread* g_infer_thread = nullptr;        ///< 推理线程
-rknn_app_context_t* g_yolo_ctx_array = nullptr;  ///< YOLO上下文数组
+// ===== 模型相关全局变量（第一阶段新增）=====
+base_model_context_t g_base_ctx = {0};              // 基础模型（全局唯一）
+worker_context_t g_worker_ctxs[WORKER_NUM] = {{0}}; // Worker 上下文数组（3个）
 
 AppConfig g_cfg = {0};
 
@@ -100,55 +112,98 @@ int load_config(const char *filename) {
 }
 
 /**
- * @brief 2x2 软件合成（将多路画面拼接到一个画布）
- * @param canvas   目标画布内存
+ * @brief 2x2 NV12 格式 RGA 硬件合成
+ * 
+ * 使用 Rockchip RGA 硬件模块进行缩放和放置，CPU 零开销。
+ * RGA 自动处理 NV12 格式的 Y 和 UV 平面，无需手动分离。
+ * 
+ * @param canvas   目标画布内存（NV12 格式，大小 = CANVAS_W * CANVAS_H * 3/2）
  * @param channels 通道数组
  * @param count    通道数量
  */
-void composite_2x2_rga(uint8_t *canvas, ChannelContext *channels, int count)
+void composite_2x2_rga_nv12(uint8_t *canvas, ChannelContext *channels, int count)
 {
-    memset(canvas, 0, CANVAS_W * CANVAS_H * 3);
-
     const int cell_cols = 2;
     const int cell_rows = 2;
     const int cell_w = CANVAS_W / cell_cols;
     const int cell_h = CANVAS_H / cell_rows;
 
-    for (int i = 0; i < count && i < MAX_CHANNEL; i++) {
-        ChannelContext *ch = &channels[i];
+    // ===== 1. 清空画布为黑色（NV12 格式）=====
+    // Y 平面：全部填 0（黑色亮度）
+    memset(canvas, 0, CANVAS_W * CANVAS_H);
+    // UV 平面：全部填 128（黑色色度，NV12 格式 U=V=128 表示无色）
+    memset(canvas + CANVAS_W * CANVAS_H, 128, CANVAS_W * CANVAS_H / 2);
+
+    // ===== 2. 创建画布的 RGA buffer（只需创建一次）=====
+    rga_buffer_t dst = wrapbuffer_virtualaddr(canvas, CANVAS_W, CANVAS_H, RK_FORMAT_YCbCr_420_SP);
+    
+    // 空的 pat buffer（不使用）
+    rga_buffer_t pat = {0};
+    
+    for (int i = 0; i < count && i < MAX_CHANNEL; i++)
+    {
+        ChannelContext* ch = &channels[i];
         g_mutex_lock(&ch->frame_lock);
-
-        image_buffer_t *img = &ch->frame_buf;
-        if (!img->virt_addr || img->width <= 0 || img->height <= 0) {
+        image_buffer_t *src_buf = &ch->frame_buf;
+        if(!src_buf->virt_addr || src_buf->width <= 0 || src_buf->height <= 0){
             g_mutex_unlock(&ch->frame_lock);
-            continue;   // 还没有收到第一帧
+            continue; // 跳过无效帧
         }
 
-        // 计算缩放比例（保持宽高比，居中显示）
-        float scale_w = (float)cell_w / img->width;
-        float scale_h = (float)cell_h / img->height;
+        // ===== 3. 创建源图像的 RGA buffer =====
+        rga_buffer_t src = wrapbuffer_virtualaddr(
+            src_buf->virt_addr,
+            src_buf->width,
+            src_buf->height,
+            RK_FORMAT_YCbCr_420_SP  // NV12
+        );
+
+        // ===== 4. 计算缩放和位置（保持宽高比，居中显示）=====
+        float scale_w = (float)cell_w / src_buf->width;
+        float scale_h = (float)cell_h / src_buf->height;
         float scale = (scale_w < scale_h) ? scale_w : scale_h;
-        int draw_w = img->width * scale;
-        int draw_h = img->height * scale;
-        int ox = (cell_w - draw_w) / 2;
-        int oy = (cell_h - draw_h) / 2;
+        
+        // NV12 格式要求宽高为偶数，强制对齐
+        int draw_w = ((int)(src_buf->width * scale)) & ~1;
+        int draw_h = ((int)(src_buf->height * scale)) & ~1;
+        
+        // 居中偏移（也保持偶数对齐）
+        int ox = ((cell_w - draw_w) / 2) & ~1;
+        int oy = ((cell_h - draw_h) / 2) & ~1;
+        
+        // 目标区域（在 2x2 网格中的位置 + 居中偏移）
+        im_rect dst_rect;
+        dst_rect.x = (i % 2) * cell_w + ox;
+        dst_rect.y = (i / 2) * cell_h + oy;
+        dst_rect.width = draw_w;
+        dst_rect.height = draw_h;
 
-        int dst_x = (i % 2) * cell_w + ox;
-        int dst_y = (i / 2) * cell_h + oy;
+        // 源区域（整帧）
+        im_rect src_rect;
+        src_rect.x = 0;
+        src_rect.y = 0;
+        src_rect.width = src_buf->width;
+        src_rect.height = src_buf->height;
 
-        // 软合成(后面换RGA!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!)
-        for (int y = 0; y < draw_h; y++) {
-            int sy = (int)(y / scale);
-            uint8_t* src_row = img->virt_addr + sy * img->width * 3;
-            uint8_t* dst_row = canvas + (dst_y + y) * CANVAS_W * 3 + dst_x * 3;
-            
-            for (int x = 0; x < draw_w; x++) {
-                int sx = (int)(x / scale);
-                dst_row[x*3 + 0] = src_row[sx*3 + 0];
-                dst_row[x*3 + 1] = src_row[sx*3 + 1];
-                dst_row[x*3 + 2] = src_row[sx*3 + 2];
-            }
+        im_rect prect = {0, 0, 0, 0};  // pat 区域（不使用）
+
+        // ===== 5. RGA 硬件执行缩放+拷贝 =====
+        // 注意：usage=0 表示只做缩放，不旋转/翻转
+        IM_STATUS ret = improcess(
+            src,      // 源
+            dst,      // 目标
+            pat,      // pat（不使用）
+            src_rect, // 源区域
+            dst_rect, // 目标区域
+            prect,    // pat区域（不使用）
+            0         // usage
+        );
+        
+        if (ret != IM_STATUS_SUCCESS) {
+            printf("[RGA] Stream %d: imcrop failed: %s\n", 
+                   i, imStrError(ret));
         }
+
         g_mutex_unlock(&ch->frame_lock);
     }
 }
@@ -166,45 +221,86 @@ int main(int argc, char *argv[]) {
     g_queue_manager = new QueueManager();
     printf("[Main] QueueManager created\n");
 
-    // ===== 3. 初始化每路的 YOLO 上下文 =====
-    g_yolo_ctx_array = new rknn_app_context_t[MAX_CHANNEL];
-    for (int i = 0; i < g_cfg.channel_count; i++) {
-        int ret = yolov5_init(&g_yolo_ctx_array[i], g_cfg.model_path);
+    // 步骤 3.1：初始化基础模型（只调用一次，权重加载到 NPU）
+    int ret = yolov5_init_base(&g_base_ctx, g_cfg.model_path);
+    if (ret < 0) {
+        printf("[Main] Failed to init base model\n");
+        delete g_queue_manager;
+        return -1;
+    }
+    printf("[Main] Base model initialized\n");
+    
+    // 步骤 3.2：复制 3 个 Worker 上下文（后续给 3 个 Worker 线程使用）
+    for (int i = 0; i < WORKER_NUM; i++) {
+        ret = yolov5_dup_worker_context(&g_base_ctx, &g_worker_ctxs[i]);
         if (ret < 0) {
-            printf("[Main] Failed to init YOLO for stream %d\n", i);
+            printf("[Main] Failed to dup worker context %d\n", i);
+            for (int j = 0; j < i; j++) {
+                yolov5_release_worker(&g_worker_ctxs[j]);
+            }
+            yolov5_release_base(&g_base_ctx);
+            delete g_queue_manager;
             return -1;
         }
-        printf("[Main] YOLO initialized for stream %d\n", i);
     }
+    printf("[Main] Model initialized: 1 base + %d workers\n", WORKER_NUM);
 
-    // ===== 4. 创建并启动推理线程 =====
-    g_infer_thread = new InferThread(g_queue_manager, g_cfg.channel_count, g_yolo_ctx_array);
-    g_infer_thread->start();
-    printf("[Main] InferThread started\n");
+
+    // ===== 4. 创建 MPMC 队列（容量 16）=====
+    g_inference_queue = new MPMCQueue<Frame*>(16);
+    printf("[Main] MPMC queue created (capacity: 16)\n");
+
+    // ===== 5. 创建并启动调度器 =====
+    g_scheduler = new Scheduler(g_queue_manager, g_inference_queue, g_cfg.channel_count);
+    g_scheduler->start();
+    printf("[Main] Scheduler started\n");
+
+    // ===== 6. 创建并启动 Worker 池 =====
+    g_worker_pool = new WorkerPool(
+        WORKER_NUM,
+        g_inference_queue,
+        g_worker_ctxs,
+        g_cfg.channels,
+        g_cfg.channel_count
+    );
+    g_worker_pool->start();
+    printf("[Main] WorkerPool started (%d workers)\n", WORKER_NUM);
 
     // ===== 5. 初始化每路的显示缓存 =====
     for (int i = 0; i < g_cfg.channel_count; i++) {
         ChannelContext* ch = &g_cfg.channels[i];
         
-        // 分配显示缓存（最大1920x1080 RGB，约6MB）
-        ch->frame_buf.virt_addr = (uint8_t*)malloc(1920 * 1080 * 3);
-        ch->frame_buf.size = 1920 * 1080 * 3;
+        // 先不分配内存，等第一帧到来时根据实际分辨率分配!!!!!!!!!!!!!!!!
+        ch->frame_buf.virt_addr = NULL;
+        ch->frame_buf.size = 0;
         ch->frame_buf.width = 0;
         ch->frame_buf.height = 0;
-        ch->frame_buf.format = IMAGE_FORMAT_RGB888;
+        ch->frame_buf.format = IMAGE_FORMAT_YUV420SP_NV12;  // 改为 NV12
         
         g_mutex_init(&ch->frame_lock);
     }
 
-    // ===== 6. 初始化显示模块 =====
-    uint8_t *canvas = (uint8_t *)malloc(CANVAS_W * CANVAS_H * 3);
+     // ===== 6. 初始化显示模块 =====
+    size_t canvas_size = CANVAS_W * CANVAS_H * 3 / 2;
+    uint8_t *canvas = (uint8_t *)malloc(canvas_size);
     if (!canvas) {
         printf("[Main] Failed to allocate canvas\n");
+        // 清理模型资源
+        for (int i = 0; i < WORKER_NUM; i++) {
+            yolov5_release_worker(&g_worker_ctxs[i]);
+        }
+        yolov5_release_base(&g_base_ctx);
+        delete g_queue_manager;
         return -1;
     }
     if (gst_display_init(CANVAS_W, CANVAS_H) < 0) {
         printf("[Main] Failed to init display\n");
         free(canvas);
+        for (int i = 0; i < WORKER_NUM; i++) {
+            yolov5_release_worker(&g_worker_ctxs[i]);
+        }
+        yolov5_release_base(&g_base_ctx);
+        delete g_queue_manager;
         return -1;
     }
     printf("[Main] Display initialized (%dx%d)\n", CANVAS_W, CANVAS_H);
@@ -212,11 +308,21 @@ int main(int argc, char *argv[]) {
     // ===== 7. 创建并启动解码器（在显示初始化后，避免显示未就绪）=====
     for (int i = 0; i < g_cfg.channel_count; i++) {
         ChannelContext* ch = &g_cfg.channels[i];
-        
-        // 创建解码器，user_data 传入 stream_id
         ch->decoder = gst_decoder_create(ch->rtsp, NULL, (void*)(intptr_t)i);
         if (!ch->decoder) {
             printf("[Main] Failed to create decoder for stream %d\n", i);
+            // 清理已创建的解码器
+            for (int j = 0; j < i; j++) {
+                gst_decoder_stop(g_cfg.channels[j].decoder);
+                gst_decoder_destroy(g_cfg.channels[j].decoder);
+            }
+            gst_display_deinit();
+            free(canvas);
+            for (int j = 0; j < WORKER_NUM; j++) {
+                yolov5_release_worker(&g_worker_ctxs[j]);
+            }
+            yolov5_release_base(&g_base_ctx);
+            delete g_queue_manager;
             return -1;
         }
         gst_decoder_start(ch->decoder);
@@ -229,13 +335,38 @@ int main(int argc, char *argv[]) {
         // 驱动 GStreamer 消息循环（必须！否则 pipeline 不工作）
         g_main_context_iteration(NULL, FALSE);
         // 合成2x2画面并推送到显示
-        composite_2x2_rga(canvas, g_cfg.channels, g_cfg.channel_count);
-        gst_display_push_rgb(CANVAS_W, CANVAS_H, canvas, CANVAS_W * CANVAS_H * 3);
-        usleep(16000);  // 约 60fps (1000000/60 ≈ 16666)
+        composite_2x2_rga_nv12(canvas, g_cfg.channels, g_cfg.channel_count);
+        gst_display_push_nv12(CANVAS_W, CANVAS_H, canvas, canvas_size);
+        //防止 CPU 100% 空转
+        //控制显示帧率
+        //给其他线程执行机会,休眠时让出 CPU 给 Worker
+        usleep(16000);  // 约 60fps (1000000/60 ≈ 16666)    绝对不能去掉！！！！！！！！
     }
 
     // ===== 9. 清理资源 =====
     printf("\n[Main] Shutting down...\n");
+    // 停止 Worker 池（先停消费者）
+    if (g_worker_pool) {
+        g_worker_pool->stop();
+        delete g_worker_pool;
+        g_worker_pool = nullptr;
+        printf("[Main] WorkerPool destroyed\n");
+    }
+
+    // 停止调度器
+    if (g_scheduler) {
+        g_scheduler->stop();
+        delete g_scheduler;
+        g_scheduler = nullptr;
+        printf("[Main] Scheduler destroyed\n");
+    }
+
+    // 释放 MPMC 队列
+    if (g_inference_queue) {
+        delete g_inference_queue;
+        g_inference_queue = nullptr;
+        printf("[Main] MPMC queue destroyed\n");
+    }
     // 9.1 停止并销毁解码器
     for (int i = 0; i < g_cfg.channel_count; i++) {
         ChannelContext* ch = &g_cfg.channels[i];
@@ -247,15 +378,7 @@ int main(int argc, char *argv[]) {
     }
     printf("[Main] Decoders destroyed\n");
 
-    // 9.2 停止推理线程
-    if (g_infer_thread) {
-        g_infer_thread->stop();
-        delete g_infer_thread;
-        g_infer_thread = nullptr;
-        printf("[Main] InferThread stopped\n");
-    }
-
-    // 9.3 释放显示缓存
+    // 9.2 释放显示缓存
     for (int i = 0; i < g_cfg.channel_count; i++) {
         ChannelContext* ch = &g_cfg.channels[i];
         g_mutex_lock(&ch->frame_lock);
@@ -267,15 +390,16 @@ int main(int argc, char *argv[]) {
         g_mutex_clear(&ch->frame_lock);
     }
 
-    // 9.4 释放 YOLO 上下文
-    if (g_yolo_ctx_array) {
-        for (int i = 0; i < g_cfg.channel_count; i++) {
-            yolov5_release(&g_yolo_ctx_array[i]);
-        }
-        delete[] g_yolo_ctx_array;
-        g_yolo_ctx_array = nullptr;
-        printf("[Main] YOLO contexts released\n");
+    // 9.3 释放 Worker 上下文
+    for (int i = 0; i < WORKER_NUM; i++) {
+        yolov5_release_worker(&g_worker_ctxs[i]);
     }
+    printf("[Main] Worker contexts released\n");
+
+    // 9.4 释放基础模型
+    yolov5_release_base(&g_base_ctx);
+    printf("[Main] Base model released\n");
+
 
     // 9.5 释放队列管理器
     if (g_queue_manager) {

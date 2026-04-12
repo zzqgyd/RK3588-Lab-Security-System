@@ -10,7 +10,7 @@ int gst_display_init(int width, int height)
     GError *error = NULL;
     gchar *pipe_str = g_strdup_printf(
         "appsrc name=display_appsrc is-live=true format=GST_FORMAT_TIME ! "
-        "video/x-raw,format=RGB,width=%d,height=%d,framerate=30/1 ! "
+        "video/x-raw,format=NV12,width=%d,height=%d,framerate=30/1 ! "
         "videoconvert ! videoscale ! autovideosink sync=false async=false",
         width, height
     );
@@ -36,7 +36,7 @@ int gst_display_init(int width, int height)
     return 0;
 }
 
-void gst_display_push_rgb(int width, int height, uint8_t *rgb_data, size_t size)
+void gst_display_push_nv12(int width, int height, uint8_t *nv12_data, size_t size)
 {
     if (!g_display_appsrc) {
         if (gst_display_init(width, height) < 0)
@@ -49,7 +49,7 @@ void gst_display_push_rgb(int width, int height, uint8_t *rgb_data, size_t size)
 
     GstMapInfo map;
     if (gst_buffer_map(buf, &map, GST_MAP_WRITE)) {
-        memcpy(map.data, rgb_data, size);
+        memcpy(map.data, nv12_data, size);
         gst_buffer_unmap(buf, &map);
     }
 

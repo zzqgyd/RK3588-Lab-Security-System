@@ -16,7 +16,7 @@
  * - 队列不负责释放内存
  */
 #define MAX_STREAM 4      // 最大流路数
-#define QUEUE_SIZE 8      // 每路队列容量（实际存 7 个）
+#define QUEUE_SIZE 4      // 每路队列容量（实际存 3 个）
 
 class QueueManager
 {

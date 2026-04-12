@@ -11,8 +11,8 @@ extern "C" {
 // 初始化显示管道
 int gst_display_init(int width, int height);
 
-// 推送一帧RGB图像到屏幕显示
-void gst_display_push_rgb(int width, int height, uint8_t *rgb_data, size_t size);
+// 推送一帧NV12图像到屏幕显示
+void gst_display_push_nv12(int width, int height, uint8_t *nv12_data, size_t size);
 
 // 销毁释放
 void gst_display_deinit(void);

@@ -443,118 +443,118 @@ static int process_fp32(float *input, int *anchor, int grid_h, int grid_w, int h
     return validCount;
 }
 
-int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter_box, float conf_threshold, float nms_threshold, object_detect_result_list *od_results)
-{
-#if defined(RV1106_1103) 
-    rknn_tensor_mem **_outputs = (rknn_tensor_mem **)outputs;
-#else
-    rknn_output *_outputs = (rknn_output *)outputs;
-#endif
-    std::vector<float> filterBoxes;
-    std::vector<float> objProbs;
-    std::vector<int> classId;
-    int validCount = 0;
-    int stride = 0;
-    int grid_h = 0;
-    int grid_w = 0;
-    int model_in_w = app_ctx->model_width;
-    int model_in_h = app_ctx->model_height;
+// int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter_box, float conf_threshold, float nms_threshold, object_detect_result_list *od_results)
+// {
+// #if defined(RV1106_1103) 
+//     rknn_tensor_mem **_outputs = (rknn_tensor_mem **)outputs;
+// #else
+//     rknn_output *_outputs = (rknn_output *)outputs;
+// #endif
+//     std::vector<float> filterBoxes;
+//     std::vector<float> objProbs;
+//     std::vector<int> classId;
+//     int validCount = 0;
+//     int stride = 0;
+//     int grid_h = 0;
+//     int grid_w = 0;
+//     int model_in_w = app_ctx->model_width;
+//     int model_in_h = app_ctx->model_height;
 
-    memset(od_results, 0, sizeof(object_detect_result_list));
+//     memset(od_results, 0, sizeof(object_detect_result_list));
 
-    for (int i = 0; i < 3; i++)
-    {
+//     for (int i = 0; i < 3; i++)
+//     {
 
-#if defined(RV1106_1103) 
-        grid_h = app_ctx->output_attrs[i].dims[1];
-        grid_w = app_ctx->output_attrs[i].dims[2];
-        stride = model_in_h / grid_h;
-        //RV1106 only support i8
-        if (app_ctx->is_quant) {
-            validCount += process_i8_rv1106((int8_t *)(_outputs[i]->virt_addr), (int *)anchor[i], grid_h, grid_w, model_in_h, model_in_w, stride, filterBoxes, objProbs,
-                                     classId, conf_threshold, app_ctx->output_attrs[i].zp, app_ctx->output_attrs[i].scale);
-        }
-#elif defined(RKNPU1)
-        // NCHW reversed: WHCN
-        grid_h = app_ctx->output_attrs[i].dims[1];
-        grid_w = app_ctx->output_attrs[i].dims[0];
-        stride = model_in_h / grid_h;
-        if (app_ctx->is_quant)
-        {
-            validCount += process_u8((uint8_t *)_outputs[i].buf, (int *)anchor[i], grid_h, grid_w, model_in_h, model_in_w, stride, filterBoxes, objProbs,
-                                     classId, conf_threshold, app_ctx->output_attrs[i].zp, app_ctx->output_attrs[i].scale);
-        }
-        else
-        {
-            validCount += process_fp32((float *)_outputs[i].buf, (int *)anchor[i], grid_h, grid_w, model_in_h, model_in_w, stride, filterBoxes, objProbs,
-                                       classId, conf_threshold);
-        }
-#else
-        grid_h = app_ctx->output_attrs[i].dims[2];
-        grid_w = app_ctx->output_attrs[i].dims[3];
-        stride = model_in_h / grid_h;
-        if (app_ctx->is_quant)
-        {
-            validCount += process_i8((int8_t *)_outputs[i].buf, (int *)anchor[i], grid_h, grid_w, model_in_h, model_in_w, stride, filterBoxes, objProbs,
-                                     classId, conf_threshold, app_ctx->output_attrs[i].zp, app_ctx->output_attrs[i].scale);
-        }
-        else
-        {
-            validCount += process_fp32((float *)_outputs[i].buf, (int *)anchor[i], grid_h, grid_w, model_in_h, model_in_w, stride, filterBoxes, objProbs,
-                                       classId, conf_threshold);
-        }
-#endif
-    }
+// #if defined(RV1106_1103) 
+//         grid_h = app_ctx->output_attrs[i].dims[1];
+//         grid_w = app_ctx->output_attrs[i].dims[2];
+//         stride = model_in_h / grid_h;
+//         //RV1106 only support i8
+//         if (app_ctx->is_quant) {
+//             validCount += process_i8_rv1106((int8_t *)(_outputs[i]->virt_addr), (int *)anchor[i], grid_h, grid_w, model_in_h, model_in_w, stride, filterBoxes, objProbs,
+//                                      classId, conf_threshold, app_ctx->output_attrs[i].zp, app_ctx->output_attrs[i].scale);
+//         }
+// #elif defined(RKNPU1)
+//         // NCHW reversed: WHCN
+//         grid_h = app_ctx->output_attrs[i].dims[1];
+//         grid_w = app_ctx->output_attrs[i].dims[0];
+//         stride = model_in_h / grid_h;
+//         if (app_ctx->is_quant)
+//         {
+//             validCount += process_u8((uint8_t *)_outputs[i].buf, (int *)anchor[i], grid_h, grid_w, model_in_h, model_in_w, stride, filterBoxes, objProbs,
+//                                      classId, conf_threshold, app_ctx->output_attrs[i].zp, app_ctx->output_attrs[i].scale);
+//         }
+//         else
+//         {
+//             validCount += process_fp32((float *)_outputs[i].buf, (int *)anchor[i], grid_h, grid_w, model_in_h, model_in_w, stride, filterBoxes, objProbs,
+//                                        classId, conf_threshold);
+//         }
+// #else
+//         grid_h = app_ctx->output_attrs[i].dims[2];
+//         grid_w = app_ctx->output_attrs[i].dims[3];
+//         stride = model_in_h / grid_h;
+//         if (app_ctx->is_quant)
+//         {
+//             validCount += process_i8((int8_t *)_outputs[i].buf, (int *)anchor[i], grid_h, grid_w, model_in_h, model_in_w, stride, filterBoxes, objProbs,
+//                                      classId, conf_threshold, app_ctx->output_attrs[i].zp, app_ctx->output_attrs[i].scale);
+//         }
+//         else
+//         {
+//             validCount += process_fp32((float *)_outputs[i].buf, (int *)anchor[i], grid_h, grid_w, model_in_h, model_in_w, stride, filterBoxes, objProbs,
+//                                        classId, conf_threshold);
+//         }
+// #endif
+//     }
 
-    // no object detect
-    if (validCount <= 0)
-    {
-        return 0;
-    }
-    std::vector<int> indexArray;
-    for (int i = 0; i < validCount; ++i)
-    {
-        indexArray.push_back(i);
-    }
-    quick_sort_indice_inverse(objProbs, 0, validCount - 1, indexArray);
+//     // no object detect
+//     if (validCount <= 0)
+//     {
+//         return 0;
+//     }
+//     std::vector<int> indexArray;
+//     for (int i = 0; i < validCount; ++i)
+//     {
+//         indexArray.push_back(i);
+//     }
+//     quick_sort_indice_inverse(objProbs, 0, validCount - 1, indexArray);
 
-    std::set<int> class_set(std::begin(classId), std::end(classId));
+//     std::set<int> class_set(std::begin(classId), std::end(classId));
 
-    for (auto c : class_set)
-    {
-        nms(validCount, filterBoxes, classId, indexArray, c, nms_threshold);
-    }
+//     for (auto c : class_set)
+//     {
+//         nms(validCount, filterBoxes, classId, indexArray, c, nms_threshold);
+//     }
 
-    int last_count = 0;
-    od_results->count = 0;
+//     int last_count = 0;
+//     od_results->count = 0;
 
-    /* box valid detect target */
-    for (int i = 0; i < validCount; ++i)
-    {
-        if (indexArray[i] == -1 || last_count >= OBJ_NUMB_MAX_SIZE)
-        {
-            continue;
-        }
-        int n = indexArray[i];
+//     /* box valid detect target */
+//     for (int i = 0; i < validCount; ++i)
+//     {
+//         if (indexArray[i] == -1 || last_count >= OBJ_NUMB_MAX_SIZE)
+//         {
+//             continue;
+//         }
+//         int n = indexArray[i];
 
-        float x1 = filterBoxes[n * 4 + 0] - letter_box->x_pad;
-        float y1 = filterBoxes[n * 4 + 1] - letter_box->y_pad;
-        float x2 = x1 + filterBoxes[n * 4 + 2];
-        float y2 = y1 + filterBoxes[n * 4 + 3];
-        int id = classId[n];
-        float obj_conf = objProbs[i];
+//         float x1 = filterBoxes[n * 4 + 0] - letter_box->x_pad;
+//         float y1 = filterBoxes[n * 4 + 1] - letter_box->y_pad;
+//         float x2 = x1 + filterBoxes[n * 4 + 2];
+//         float y2 = y1 + filterBoxes[n * 4 + 3];
+//         int id = classId[n];
+//         float obj_conf = objProbs[i];
 
-        od_results->results[last_count].box.left = (int)(clamp(x1, 0, model_in_w) / letter_box->scale);
-        od_results->results[last_count].box.top = (int)(clamp(y1, 0, model_in_h) / letter_box->scale);
-        od_results->results[last_count].box.right = (int)(clamp(x2, 0, model_in_w) / letter_box->scale);
-        od_results->results[last_count].box.bottom = (int)(clamp(y2, 0, model_in_h) / letter_box->scale);
-        od_results->results[last_count].prop = obj_conf;
-        od_results->results[last_count].cls_id = id;
-        last_count++;
-    }
-    od_results->count = last_count;
-    return 0;
-}
+//         od_results->results[last_count].box.left = (int)(clamp(x1, 0, model_in_w) / letter_box->scale);
+//         od_results->results[last_count].box.top = (int)(clamp(y1, 0, model_in_h) / letter_box->scale);
+//         od_results->results[last_count].box.right = (int)(clamp(x2, 0, model_in_w) / letter_box->scale);
+//         od_results->results[last_count].box.bottom = (int)(clamp(y2, 0, model_in_h) / letter_box->scale);
+//         od_results->results[last_count].prop = obj_conf;
+//         od_results->results[last_count].cls_id = id;
+//         last_count++;
+//     }
+//     od_results->count = last_count;
+//     return 0;
+// }
 
 int init_post_process()
 {
@@ -595,3 +595,121 @@ void deinit_post_process()
         }
     }
 }
+
+// ===== 文件: postprocess.c =====
+/**
+ * @brief 后处理函数（新版，接收 worker_context_t）
+ * 
+ * 与原版 post_process 逻辑完全相同，只是从 worker_ctx 中获取所需属性
+ */
+int post_process_with_attrs(
+    worker_context_t *worker_ctx,
+    void *outputs,
+    letterbox_t *letter_box,
+    float conf_threshold,
+    float nms_threshold,
+    object_detect_result_list *od_results)
+{
+    rknn_output *_outputs = (rknn_output *)outputs;
+    
+    std::vector<float> filterBoxes;
+    std::vector<float> objProbs;
+    std::vector<int> classId;
+    int validCount = 0;
+    int stride = 0;
+    int grid_h = 0;
+    int grid_w = 0;
+    int model_in_w = worker_ctx->model_width;
+    int model_in_h = worker_ctx->model_height;
+
+    memset(od_results, 0, sizeof(object_detect_result_list));
+
+    // 遍历 3 个输出层
+    for (int i = 0; i < 3; i++)
+    {
+        grid_h = worker_ctx->output_attrs[i].dims[2];
+        grid_w = worker_ctx->output_attrs[i].dims[3];
+        stride = model_in_h / grid_h;
+
+        if (worker_ctx->is_quant)
+        {
+            validCount += process_i8(
+                (int8_t *)_outputs[i].buf,
+                (int *)anchor[i],
+                grid_h, grid_w,
+                model_in_h, model_in_w,
+                stride,
+                filterBoxes, objProbs, classId,
+                conf_threshold,
+                worker_ctx->output_attrs[i].zp,
+                worker_ctx->output_attrs[i].scale
+            );
+        }
+        else
+        {
+            validCount += process_fp32(
+                (float *)_outputs[i].buf,
+                (int *)anchor[i],
+                grid_h, grid_w,
+                model_in_h, model_in_w,
+                stride,
+                filterBoxes, objProbs, classId,
+                conf_threshold
+            );
+        }
+    }
+
+    // 没有检测到目标
+    if (validCount <= 0)
+    {
+        return 0;
+    }
+
+    // 按置信度排序
+    std::vector<int> indexArray;
+    for (int i = 0; i < validCount; ++i)
+    {
+        indexArray.push_back(i);
+    }
+    quick_sort_indice_inverse(objProbs, 0, validCount - 1, indexArray);
+
+    // 按类别分别做 NMS
+    std::set<int> class_set(std::begin(classId), std::end(classId));
+    for (auto c : class_set)
+    {
+        nms(validCount, filterBoxes, classId, indexArray, c, nms_threshold);
+    }
+
+    // 填充最终结果
+    int last_count = 0;
+    od_results->count = 0;
+
+    for (int i = 0; i < validCount; ++i)
+    {
+        if (indexArray[i] == -1 || last_count >= OBJ_NUMB_MAX_SIZE)
+        {
+            continue;
+        }
+        int n = indexArray[i];
+
+        float x1 = filterBoxes[n * 4 + 0] - letter_box->x_pad;
+        float y1 = filterBoxes[n * 4 + 1] - letter_box->y_pad;
+        float x2 = x1 + filterBoxes[n * 4 + 2];
+        float y2 = y1 + filterBoxes[n * 4 + 3];
+        int id = classId[n];
+        float obj_conf = objProbs[i];
+
+        od_results->results[last_count].box.left   = (int)(clamp(x1, 0, model_in_w) / letter_box->scale);
+        od_results->results[last_count].box.top    = (int)(clamp(y1, 0, model_in_h) / letter_box->scale);
+        od_results->results[last_count].box.right  = (int)(clamp(x2, 0, model_in_w) / letter_box->scale);
+        od_results->results[last_count].box.bottom = (int)(clamp(y2, 0, model_in_h) / letter_box->scale);
+        od_results->results[last_count].prop       = obj_conf;
+        od_results->results[last_count].cls_id     = id;
+        last_count++;
+    }
+    od_results->count = last_count;
+    return 0;
+}
+
+
+

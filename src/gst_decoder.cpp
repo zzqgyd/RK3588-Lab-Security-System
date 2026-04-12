@@ -12,6 +12,7 @@
 #include "config.h"
 
 extern QueueManager* g_queue_manager;   ///< 在 demo.cpp 中定义
+static uint64_t g_stream_seq[MAX_CHANNEL] = {0};  // 每路独立帧序号
 
 // ============================================================================
 // 解码器实例结构体（对外隐藏,每路一份）
@@ -116,15 +117,16 @@ static GstFlowReturn new_sample_cb(GstElement *sink, gpointer user_data)
         return GST_FLOW_ERROR;
     }
 
-    // 填充帧信息
+    // 填充帧信息（第二版：使用 NV12 格式）
     frame->stream_id = stream_id;
+    frame->seq = g_stream_seq[stream_id]++; 
     frame->pts = 0;  // TODO: 从 GStreamer 获取真实 PTS!!!!!!!!!!!!!!!!!!!!!!
     
     frame->img.width = width;
     frame->img.height = height;
     frame->img.width_stride = width;
     frame->img.height_stride = height;
-    frame->img.format = IMAGE_FORMAT_RGB888;
+    frame->img.format = IMAGE_FORMAT_YUV420SP_NV12; // 改为 NV12
     frame->img.size = map.size;
     frame->img.fd = -1;  // 暂无 DMA-BUF!!!!!!!!!!!!!!!!!!
 
@@ -140,14 +142,13 @@ static GstFlowReturn new_sample_cb(GstElement *sink, gpointer user_data)
         return GST_FLOW_ERROR;
     }
 
-    // 入队（传递给推理线程）
+    // 入SPSC队
     SPSCQueue<Frame*, QUEUE_SIZE>& q = g_queue_manager->get_queue(stream_id);
     if (!q.push(frame)) {
-        // 队列满，丢弃此帧（防止内存爆炸）
+        // 队列满，丢弃此帧（防止内存爆炸）！！！！！！！！！！！！！！！！！！！！！！
         free(frame->img.virt_addr);
         delete frame;
     }
-
 
     // 10. 解除内存映射
     gst_buffer_unmap(buf, &map);
@@ -179,12 +180,11 @@ GstDecoder *gst_decoder_create(const gchar *rtsp_url, GstImageCallback callback,
 
     int stream_id = (int)(intptr_t)user_data;
 
-    // 2. 构建GStreamer管道字符串
+    // 2. 构建GStreamer管道字符串   第二版：管道输出 NV12，去掉 videoconvert
     pipeline_str = g_strdup_printf("rtspsrc location=%s latency=0 ! "
                                   "rtph264depay ! "
                                   "h264parse ! "
-                                  "mppvideodec format=NV12 fast-mode=true arm-afbc=false ! "
-                                  "videoconvert ! video/x-raw,format=RGB ! "
+                                  "mppvideodec format=NV12  fast-mode=true arm-afbc=false ! "
                                   "appsink name=appsink sync=false max-buffers=1 drop=true",
                                   rtsp_url);
 
