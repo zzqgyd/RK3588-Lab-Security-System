@@ -1,9 +1,12 @@
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
+#include <gst/allocators/gstdmabuf.h>
 #include <stdio.h>
+#include <sys/mman.h>
 #include <string.h>
 #include <stdlib.h>
 #include "gst_decoder.h"
+#include "frame_pool.hpp"
 
 #include "gst_decoder.h"
 #include "config.h"           
@@ -13,6 +16,7 @@
 
 extern QueueManager* g_queue_manager;   ///< 在 demo.cpp 中定义
 static uint64_t g_stream_seq[MAX_CHANNEL] = {0};  // 每路独立帧序号
+extern AppConfig g_cfg;
 
 // ============================================================================
 // 解码器实例结构体（对外隐藏,每路一份）
@@ -23,6 +27,20 @@ struct GstDecoder {
     GstImageCallback callback;     ///< 用户回调函数（已废弃，不再使用）
     void*            user_data;    ///< 回调用户数据（实际存储 stream_id）
 };
+
+/**
+ * @brief 回退模式：memcpy 拷贝数据
+ */
+static bool fallback_copy(FramePtr frame, GstBuffer* buf, GstMapInfo* map) {
+    frame->is_dmabuf = false;
+    frame->img.virt_addr = (unsigned char*)malloc(map->size);
+    if (!frame->img.virt_addr) {
+        return false;
+    }
+    memcpy(frame->img.virt_addr, map->data, map->size);
+    frame->img.fd = -1;
+    return true;
+}
 
 /**
  * @brief GStreamer appsink 的 new-sample 信号回调
@@ -43,10 +61,11 @@ static GstFlowReturn new_sample_cb(GstElement *sink, gpointer user_data)
     GstBuffer *buf = NULL;      // 图像缓冲区
     GstCaps *caps = NULL;       // 图像格式信息
     GstStructure *str = NULL;   // 图像结构信息
-    GstMapInfo map;             // 内存映射信息
+    // GstMapInfo map;             // 内存映射信息
 
     // 从 user_data 中取出 stream_id
     int stream_id = (int)(intptr_t)decoder->user_data;
+    ChannelContext* ch = &g_cfg.channels[stream_id];
     
     // ===== 1. 从 appsink 拉取一帧 Sample =====
     sample = gst_app_sink_pull_sample(GST_APP_SINK(sink));
@@ -101,62 +120,83 @@ static GstFlowReturn new_sample_cb(GstElement *sink, gpointer user_data)
         return GST_FLOW_ERROR;
     }
     
-    // 8. 映射图像缓冲区到内存!!!!!!!!!!!!!!!!!!!!!!!!!
-    if (!gst_buffer_map(buf, &map, GST_MAP_READ)) {
-        g_print("Error: Failed to map buffer, stream=%d\n", stream_id);
+    size_t buf_size = gst_buffer_get_size(buf);
+    if (buf_size == 0) {
+        buf_size = width * height * 3 / 2;  // NV12 大小
+    }
+    
+    // ===== 5. 从帧池获取 Frame (Step 1 关键改动) =====
+    FramePtr frame;
+    if (ch->frame_pool) {
+        frame = ch->frame_pool->acquire();
+    }
+    
+    if (!frame) {
+        g_printerr("[Decoder] Failed to acquire Frame from pool, stream=%d\n", stream_id);
         gst_sample_unref(sample);
         return GST_FLOW_ERROR;
     }
     
-    // ===== 9. 创建 Frame 并入队 =====
-    Frame* frame = new Frame();
-    if (!frame) {
-        g_printerr("[Decoder] Failed to allocate Frame, stream=%d\n", stream_id);
-        gst_buffer_unmap(buf, &map);
-        gst_sample_unref(sample);
-        return GST_FLOW_ERROR;
-    }
-
-    // 填充帧信息（第二版：使用 NV12 格式）
+    // ===== 6. 填充帧信息 =====
     frame->stream_id = stream_id;
-    frame->seq = g_stream_seq[stream_id]++; 
-    frame->pts = 0;  // TODO: 从 GStreamer 获取真实 PTS!!!!!!!!!!!!!!!!!!!!!!
+    frame->seq = g_stream_seq[stream_id]++;
+    frame->pts = GST_BUFFER_PTS(buf);
     
     frame->img.width = width;
     frame->img.height = height;
     frame->img.width_stride = width;
     frame->img.height_stride = height;
-    frame->img.format = IMAGE_FORMAT_YUV420SP_NV12; // 改为 NV12
-    frame->img.size = map.size;
-    frame->img.fd = -1;  // 暂无 DMA-BUF!!!!!!!!!!!!!!!!!!
+    frame->img.format = IMAGE_FORMAT_YUV420SP_NV12;
+    frame->img.size = buf_size;
 
-    // 分配内存并拷贝（临时方案，后续改为零拷贝/内存池）!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    frame->img.virt_addr = (unsigned char*)malloc(map.size);
-    memcpy(frame->img.virt_addr, map.data, map.size);
-    if (!frame->img.virt_addr) {
-        g_printerr("[Decoder] Failed to malloc image buffer, stream=%d, size=%zu\n", 
-                   stream_id, map.size);
-        delete frame;
+    // ===== Step 3 核心改动：尝试 DMA-BUF 模式 =====
+    GstMemory* mem = gst_buffer_peek_memory(buf, 0);
+    bool use_dmabuf = gst_is_dmabuf_memory(mem);
+    
+    if (use_dmabuf) {
+        // ===== DMA-BUF 模式：mmap 获取虚拟地址 =====
+        int dmabuf_fd = gst_dmabuf_memory_get_fd(mem);
+        void* virt = mmap(NULL, buf_size, PROT_READ | PROT_WRITE, 
+                    MAP_SHARED, dmabuf_fd, 0);
+
+        frame->is_dmabuf = true;
+        frame->gst_sample = gst_sample_ref(sample);  // 持有引用，确保 buffer 不被释放
+        frame->img.fd = dmabuf_fd;                    // 只存 fd
+        frame->img.virt_addr = (unsigned char*)virt;    // mmap 得到的虚拟地址
+        
+        // printf("[Decoder] Stream %d: DMA-BUF mode, fd=%d, size=%zu\n", 
+        //        stream_id, dmabuf_fd, buf_size);
+        // 注意：sample 不能在这里 unref，因为 frame 持有引用
+        // 但原 sample 需要 unref，因为我们已经 ref 了一份
+        gst_sample_unref(sample);  // ← 添加这行！释放原始 sample
+    } else {
+        // ===== 回退模式：memcpy =====
+        GstMapInfo map;
+        if (!gst_buffer_map(buf, &map, GST_MAP_READ)) {
+            g_printerr("[Decoder] Failed to map buffer, stream=%d\n", stream_id);
+            gst_sample_unref(sample);
+            return GST_FLOW_ERROR;
+        }
+        
+        if (!fallback_copy(frame, buf, &map)) {
+            g_printerr("[Decoder] Failed to copy buffer, stream=%d\n", stream_id);
+            gst_buffer_unmap(buf, &map);
+            gst_sample_unref(sample);
+            return GST_FLOW_ERROR;
+        }
+        
         gst_buffer_unmap(buf, &map);
-        gst_sample_unref(sample);
-        return GST_FLOW_ERROR;
+        gst_sample_unref(sample);  // 释放 sample
+        printf("[Decoder] Stream %d: fallback memcpy mode\n", stream_id);
     }
-
-    // 入SPSC队
-    SPSCQueue<Frame*, QUEUE_SIZE>& q = g_queue_manager->get_queue(stream_id);
-    if (!q.push(frame)) {
-        // 队列满，丢弃此帧（防止内存爆炸）！！！！！！！！！！！！！！！！！！！！！！
-        free(frame->img.virt_addr);
-        delete frame;
+    
+    // ===== 9. 写入 RingBuffer (Step 1 关键改动) =====
+    if (g_queue_manager) {
+        RingBuffer<FramePtr, RING_SIZE>& rb = g_queue_manager->get_queue(stream_id);
+        rb.write(frame);  // frame 是 shared_ptr，自动管理引用计数
     }
-
-    // 10. 解除内存映射
-    gst_buffer_unmap(buf, &map);
     
-    // 11. 释放采样数据对象
-    gst_sample_unref(sample);
-    
-    // 12. 返回处理成功
+    // 10. 返回处理成功
     return GST_FLOW_OK;
 }
 

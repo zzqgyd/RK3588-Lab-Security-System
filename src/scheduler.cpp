@@ -2,7 +2,7 @@
 #include <unistd.h>
 #include <stdio.h>
 
-Scheduler::Scheduler(QueueManager* qm, MPMCQueue<Frame*>* out_queue, int stream_num)
+Scheduler::Scheduler(QueueManager* qm, MPMCQueue<FramePtr>* out_queue, int stream_num)
     : qm_(qm)
     , out_queue_(out_queue)
     , stream_num_(stream_num)
@@ -38,71 +38,52 @@ void Scheduler::stop()
     printf("[Scheduler] Stopped\n");
 }
 
-bool Scheduler::should_skip(int stream_id)
-{
-    // 第一阶段：简单策略，不跳过任何帧
-    // 后续阶段会增加智能跳帧!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    (void)stream_id;
-    return false;
-}
-
 void Scheduler::loop()
 {
-    Frame* frame = nullptr;
+    FramePtr frame = nullptr;
     
     while (running_)
     {
         bool got_any = false;
         
-        // 轮询所有 SPSC 队列!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        // 轮询所有 RingBuffer
         for (int i = 0; i < stream_num_; i++)
         {
-            SPSCQueue<Frame*, QUEUE_SIZE>& q = qm_->get_queue(i);
+            RingBuffer<FramePtr, RING_SIZE>& rb = qm_->get_queue(i);
             
-            // 尝试取出一帧（非阻塞）有数据立即返回 true，没数据立即返回 false
-            if (q.pop(frame))   
+            // 读取一帧（FIFO 顺序）
+            frame = rb.read();
+            
+            if (frame)
             {
-                // 更新状态
-                stream_states_[i].last_pop_time = std::chrono::steady_clock::now();
-                
-                // 跳帧判断（第一阶段：不跳过）!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-                if (should_skip(i))
-                {
-                    // 释放帧内存
-                    if (frame->img.virt_addr) {
-                        free(frame->img.virt_addr);
-                    }
-                    delete frame;
-                    continue;
-                }
-                
-                // 投递到 MPMC 队列（阻塞直到成功） !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-                // 非阻塞的话是自旋+sleep频繁唤醒CPU，效率极低，且不利于背压传导（1）
-                // 阻塞时，整个循环暂停，公平调度（1）
-                // Worker慢 → MPMC满 → Scheduler阻塞 → 不再从SPSC取帧 → SPSC积压 → 采集端感知到背压（2）
-                out_queue_->enqueue(frame); 
                 got_any = true;
+                stream_states_[i].last_pop_time = std::chrono::steady_clock::now();
+                stream_states_[i].last_processed_seq = frame->seq;
+                
+                // 非阻塞投递到 MPMC 队列
+                if (!out_queue_->try_enqueue(frame))
+                {
+                    stream_states_[i].mpmc_dropped++;
+                    
+                    static int drop_print_counter = 0;
+                    if (++drop_print_counter % 100 == 0) {
+                        printf("[Scheduler] MPMC queue full, dropping frame\n");
+                    }
+                }
             }
         }
         
-        // 本轮没有处理任何数据，短暂休眠,防止CPU空转
         if (!got_any)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
     
-    // 线程退出前，清空所有 SPSC 队列中的     剩余帧!!!
+    // 清空剩余帧
     printf("[Scheduler] Draining remaining frames...\n");
     for (int i = 0; i < stream_num_; i++)
     {
-        SPSCQueue<Frame*, QUEUE_SIZE>& q = qm_->get_queue(i);
-        while (q.pop(frame))
-        {
-            if (frame->img.virt_addr) {
-                free(frame->img.virt_addr);
-            }
-            delete frame;
-        }
+        RingBuffer<FramePtr, RING_SIZE>& rb = qm_->get_queue(i);
+        rb.clear();
     }
 }

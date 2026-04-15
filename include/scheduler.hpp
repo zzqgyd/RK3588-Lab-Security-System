@@ -15,7 +15,7 @@
  * 职责：
  * 1. 轮询所有 SPSC 队列
  * 2. 执行跳帧策略（当前阶段：简单取最新帧）
- * 3. 将有效的 Frame* 投递到 MPMC 队列
+ * 3. 将有效的 FramePtr 投递到 MPMC 队列
  * 
  * 线程模型：单线程
  * 
@@ -32,7 +32,7 @@ public:
      * @param out_queue    输出 MPMC 队列
      * @param stream_num   流路数
      */
-    Scheduler(QueueManager* qm, MPMCQueue<Frame*>* out_queue, int stream_num);
+    Scheduler(QueueManager* qm, MPMCQueue<FramePtr>* out_queue, int stream_num);
     
     ~Scheduler();
     
@@ -61,13 +61,14 @@ private:
     
 private:
     QueueManager* qm_;                  // SPSC 队列来源
-    MPMCQueue<Frame*>* out_queue_;      // MPMC 输出队列
+    MPMCQueue<FramePtr>* out_queue_;      // MPMC 输出队列
     int stream_num_;                    // 流路数
     
     // 每路的状态（用于跳帧）
     struct StreamState {
         uint64_t last_processed_seq = 0;    // 最后处理的帧序号
         std::chrono::steady_clock::time_point last_pop_time;  // 最后取帧时间
+        uint64_t mpmc_dropped = 0;
     };
     std::vector<StreamState> stream_states_;
     

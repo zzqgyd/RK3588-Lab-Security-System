@@ -14,7 +14,7 @@
  * @brief Worker 线程池
  * 
  * 职责：
- * 1. 从 MPMC 队列消费 Frame*
+ * 1. 从 MPMC 队列消费 FramePtr
  * 2. 调用 YOLO 推理
  * 3. 在图像上画框
  * 4. 更新显示缓存
@@ -37,7 +37,7 @@ public:
      * @param channel_count  通道数量
      */
     WorkerPool(int num_workers, 
-               MPMCQueue<Frame*>* in_queue,
+               MPMCQueue<FramePtr>* in_queue,
                worker_context_t* worker_ctxs,
                ChannelContext* channels,
                int channel_count);
@@ -66,11 +66,11 @@ private:
      * @param worker_ctx Worker 上下文
      * @param frame      待处理的帧
      */
-    void process_frame(worker_context_t* worker_ctx, Frame* frame);
+    void process_frame(worker_context_t* worker_ctx, FramePtr frame);
     
 private:
     int num_workers_;                       // Worker 数量
-    MPMCQueue<Frame*>* in_queue_;           // 输入队列
+    MPMCQueue<FramePtr>* in_queue_;           // 输入队列
     worker_context_t* worker_ctxs_;         // Worker 上下文数组（外部传入）
     ChannelContext* channels_;              // 通道上下文数组
     int channel_count_;                     // 通道数量

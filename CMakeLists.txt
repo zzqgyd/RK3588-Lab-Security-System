@@ -4,7 +4,7 @@ project(gst_mpp_rga_yolo)
 set(CMAKE_INSTALL_PREFIX ${CMAKE_SOURCE_DIR}/install)
 
 # 板端原生编译，不需要交叉编译器！
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_C_STANDARD 99)
 
 set(CMAKE_CXX_FLAGS "-g -O0")
@@ -18,7 +18,7 @@ set(CMAKE_INSTALL_RPATH "$ORIGIN/lib")
 # 自动找依赖库（glib/gstreamer）
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GLIB REQUIRED glib-2.0)
-pkg_check_modules(GST REQUIRED gstreamer-1.0 gstreamer-app-1.0)
+pkg_check_modules(GST REQUIRED gstreamer-1.0 gstreamer-app-1.0 gstreamer-allocators-1.0)
 
 # 头文件
 include_directories(
@@ -45,6 +45,7 @@ set(SOURCES
     src/yolov5_infer.cc
     src/scheduler.cpp
     src/worker_pool.cpp
+    src/dma_alloc.cpp
     utils/image_utils.c
     utils/file_utils.c
     utils/image_drawing.c
