@@ -6,7 +6,6 @@
 
 #include "im2d.h"
 #include "drmrga.h"
-#include "dma_alloc.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_THREAD_LOCALS

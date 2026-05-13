@@ -523,6 +523,12 @@ int MppEncoder::Encode(void* mpp_buf, char* enc_buf, int max_size) {
     mpp_frame_set_eos(frame, frm_eos);
     mpp_frame_set_buffer(frame, mpp_buf);
 
+    printf("[MPP] 编码器 stride: hor=%d ver=%d, frame_size=%zu\n",
+       enc_params.hor_stride, enc_params.ver_stride, frame_size);
+    printf("[MPP] frame stride: hor=%d ver=%d\n", 
+       mpp_frame_get_hor_stride(frame), 
+       mpp_frame_get_ver_stride(frame));
+
     meta = mpp_frame_get_meta(frame);
     mpp_packet_init_with_buffer(&packet, pkt_buf);
     /* NOTE: It is important to clear output packet length!! */

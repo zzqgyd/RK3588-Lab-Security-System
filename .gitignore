@@ -59,3 +59,49 @@ core.*
 *.dSYM/
 .DS_Store
 install/
+
+# ============================================
+# 运行时生成的文件（不提交）
+# ============================================
+config/face_database.db
+config/records.db
+config/records.db-shm
+config/records.db-wal
+drm_modetest_info.txt
+
+# ============================================
+# Qt UI 编译产物
+# ============================================
+qt_face_ui/build/
+qt_face_ui/CMakeLists.txt.user
+qt_face_ui/*.pro.user
+qt_face_ui/Makefile
+qt_face_ui/ui_*.h
+qt_face_ui/moc_*.cpp
+qt_face_ui/qrc_*.cpp
+qt_face_ui/*_autogen/
+
+# ============================================
+# 人脸服务模型文件（大文件不提交）
+# ============================================
+face_process/model/*.rknn
+face_process/model/Gundam_RK3588
+
+# ============================================
+# 主进程模型文件（大文件不提交）
+# ============================================
+main_process/model/*.rknn
+
+# ============================================
+# 配置文件（包含本地路径，不提交）
+# ============================================
+config/config.ini
+config/roi.conf
+config/config copy.ini
+
+# ============================================
+# 数据库文件（不提交）
+# ============================================
+*.db
+*.db-shm
+*.db-wal
