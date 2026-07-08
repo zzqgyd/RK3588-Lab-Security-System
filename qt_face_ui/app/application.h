@@ -67,6 +67,13 @@ private:
 
     bool                m_showingUsb;
     QTimer*             m_usbHideTimer;
+
+    // USB 主动登记的待处理信息（仅在 onDeviceRegisterRequested 后有效）
+    // m_pendingRegMode: 0=无, 2=设备登记（与 face_process case 编号一致）
+    int                 m_pendingRegMode;
+    int                 m_pendingRegRoom;
+    int                 m_pendingRegDevice;
+    int                 m_pendingRegDuration;
 };
 
 #endif

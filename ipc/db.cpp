@@ -43,6 +43,28 @@ static const char* SQL_CREATE_TABLES =
     "  feature_id  INTEGER PRIMARY KEY,"                    // InspireFace 分配的 feature_id（主键，唯一）
     "  person_name TEXT    NOT NULL,"                       // 对应的人名
     "  room_id     INTEGER DEFAULT 0"                       // 所属房间号
+    ");"
+    // -------- 智能插座配置表（device_process 读写，QT 只读） --------
+    "CREATE TABLE IF NOT EXISTS device_plugs ("
+    "  id         INTEGER PRIMARY KEY,"                     // 主键自增
+    "  room_id    INTEGER NOT NULL,"                        // 房间号（0-7，对应监控流）
+    "  device_id  INTEGER NOT NULL,"                        // 设备编号（与主进程 ROI 设备号对应）
+    "  name       TEXT    NOT NULL,"                        // 使用插座的设备名称（如"示波器"）
+    "  ip         TEXT    NOT NULL,"                        // 插座 IP
+    "  token      TEXT    NOT NULL,"                        // 32 位 hex token
+    "  enabled    INTEGER DEFAULT 1,"                       // 是否启用（0/1）
+    "  UNIQUE(room_id, device_id)"                          // 同房间同设备号唯一
+    ");"
+    // -------- ESP32 设备表（room_esp32）--------
+    // 每个房间绑定一个 ESP32（room_id 唯一），用于被动人脸识别推流
+    "CREATE TABLE IF NOT EXISTS room_esp32 ("
+    "  id         INTEGER PRIMARY KEY,"                     // 主键自增
+    "  room_id    INTEGER NOT NULL UNIQUE,"                 // 房间号（唯一，一间一个 ESP32）
+    "  name       TEXT    NOT NULL,"                        // 备注名（如"实验室ESP32"）
+    "  esp32_ip   TEXT    NOT NULL,"                        // ESP32 IP（用于 RTSP 拉流）
+    "  rtsp_url   TEXT    NOT NULL,"                        // RTSP 流地址
+    "  online     INTEGER DEFAULT 0,"                       // 在线状态（0离线 1在线）
+    "  last_seen  INTEGER DEFAULT 0"                        // 最后心跳时间戳（秒）
     ");";
 
 // ================================================================
@@ -411,4 +433,199 @@ int db_delete_video_by_path(void* db, const char* file_path) {
     sqlite3_step(stmt);
     sqlite3_finalize(stmt);
     return 0;
+}
+
+// ================================================================
+// ★ 智能插座配置表（device_plugs）CRUD 接口
+// ================================================================
+
+// 插入或更新插座配置（按 room_id+device_id 唯一）
+int db_insert_device_plug(void* db, int room_id, int device_id,
+                          const char* name, const char* ip, const char* token, int enabled)
+{
+    const char* sql =
+        "INSERT OR REPLACE INTO device_plugs (room_id, device_id, name, ip, token, enabled) "
+        "VALUES (?, ?, ?, ?, ?, ?)";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2((sqlite3*)db, sql, -1, &stmt, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_int( stmt, 1, room_id);
+    sqlite3_bind_int( stmt, 2, device_id);
+    sqlite3_bind_text(stmt, 3, name,  -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 4, ip,    -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 5, token, -1, SQLITE_STATIC);
+    sqlite3_bind_int( stmt, 6, enabled);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+// 删除插座配置（按 room_id + device_id）
+int db_delete_device_plug(void* db, int room_id, int device_id)
+{
+    const char* sql = "DELETE FROM device_plugs WHERE room_id = ? AND device_id = ?";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2((sqlite3*)db, sql, -1, &stmt, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_int(stmt, 1, room_id);
+    sqlite3_bind_int(stmt, 2, device_id);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+// 查询指定房间的所有插座配置
+// 返回记录数，结果写入 out 数组（最多 max_count 条），实际写入数返回
+int db_query_plugs_by_room(void* db, int room_id,
+                           DevicePlugRow* out, int max_count)
+{
+    const char* sql = "SELECT id, room_id, device_id, name, ip, token, enabled "
+                      "FROM device_plugs WHERE room_id = ? ORDER BY device_id";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2((sqlite3*)db, sql, -1, &stmt, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_int(stmt, 1, room_id);
+
+    int count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && count < max_count) {
+        out[count].id        = sqlite3_column_int(stmt, 0);
+        out[count].room_id   = sqlite3_column_int(stmt, 1);
+        out[count].device_id = sqlite3_column_int(stmt, 2);
+        const char* name  = (const char*)sqlite3_column_text(stmt, 3);
+        const char* ip    = (const char*)sqlite3_column_text(stmt, 4);
+        const char* token = (const char*)sqlite3_column_text(stmt, 5);
+        strncpy(out[count].name,  name  ? name  : "", sizeof(out[count].name) - 1);
+        strncpy(out[count].ip,    ip    ? ip    : "", sizeof(out[count].ip) - 1);
+        strncpy(out[count].token, token ? token : "", sizeof(out[count].token) - 1);
+        out[count].enabled  = sqlite3_column_int(stmt, 6);
+        count++;
+    }
+    sqlite3_finalize(stmt);
+    return count;
+}
+
+// 查询指定房间+设备号的插座配置
+int db_query_plug(void* db, int room_id, int device_id, DevicePlugRow* out)
+{
+    const char* sql = "SELECT id, room_id, device_id, name, ip, token, enabled "
+                      "FROM device_plugs WHERE room_id = ? AND device_id = ?";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2((sqlite3*)db, sql, -1, &stmt, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_int(stmt, 1, room_id);
+    sqlite3_bind_int(stmt, 2, device_id);
+
+    int ret = -1;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        out->id        = sqlite3_column_int(stmt, 0);
+        out->room_id   = sqlite3_column_int(stmt, 1);
+        out->device_id = sqlite3_column_int(stmt, 2);
+        const char* name  = (const char*)sqlite3_column_text(stmt, 3);
+        const char* ip    = (const char*)sqlite3_column_text(stmt, 4);
+        const char* token = (const char*)sqlite3_column_text(stmt, 5);
+        strncpy(out->name,  name  ? name  : "", sizeof(out->name) - 1);
+        strncpy(out->ip,    ip    ? ip    : "", sizeof(out->ip) - 1);
+        strncpy(out->token, token ? token : "", sizeof(out->token) - 1);
+        out->enabled  = sqlite3_column_int(stmt, 6);
+        ret = 0;
+    }
+    sqlite3_finalize(stmt);
+    return ret;
+}
+
+// ================================================================
+// ★ ESP32 设备表（room_esp32）CRUD 接口
+// ================================================================
+
+// 插入或更新 ESP32 配置（按 room_id 唯一）
+int db_insert_room_esp32(void* db, int room_id,
+                         const char* name, const char* esp32_ip, const char* rtsp_url)
+{
+    const char* sql =
+        "INSERT OR REPLACE INTO room_esp32 (room_id, name, esp32_ip, rtsp_url) "
+        "VALUES (?, ?, ?, ?)";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2((sqlite3*)db, sql, -1, &stmt, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_int( stmt, 1, room_id);
+    sqlite3_bind_text(stmt, 2, name,      -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 3, esp32_ip,  -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 4, rtsp_url,  -1, SQLITE_STATIC);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+// 删除 ESP32 配置（按 room_id）
+int db_delete_room_esp32(void* db, int room_id)
+{
+    const char* sql = "DELETE FROM room_esp32 WHERE room_id = ?";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2((sqlite3*)db, sql, -1, &stmt, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_int(stmt, 1, room_id);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+// 查询指定房间的 ESP32 配置
+int db_query_esp32_by_room(void* db, int room_id, RoomEsp32Row* out)
+{
+    const char* sql = "SELECT id, room_id, name, esp32_ip, rtsp_url, online, last_seen "
+                      "FROM room_esp32 WHERE room_id = ?";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2((sqlite3*)db, sql, -1, &stmt, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_int(stmt, 1, room_id);
+
+    int ret = -1;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        out->id        = sqlite3_column_int(stmt, 0);
+        out->room_id   = sqlite3_column_int(stmt, 1);
+        const char* name    = (const char*)sqlite3_column_text(stmt, 2);
+        const char* ip      = (const char*)sqlite3_column_text(stmt, 3);
+        const char* rtsp    = (const char*)sqlite3_column_text(stmt, 4);
+        strncpy(out->name,     name ? name : "", sizeof(out->name) - 1);
+        strncpy(out->esp32_ip, ip   ? ip   : "", sizeof(out->esp32_ip) - 1);
+        strncpy(out->rtsp_url, rtsp ? rtsp : "", sizeof(out->rtsp_url) - 1);
+        out->online    = sqlite3_column_int(stmt, 5);
+        out->last_seen = sqlite3_column_int64(stmt, 6);
+        ret = 0;
+    }
+    sqlite3_finalize(stmt);
+    return ret;
+}
+
+// 查询所有 ESP32 配置
+int db_query_all_esp32(void* db, RoomEsp32Row* out, int max_count)
+{
+    const char* sql = "SELECT id, room_id, name, esp32_ip, rtsp_url, online, last_seen "
+                      "FROM room_esp32 ORDER BY room_id";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2((sqlite3*)db, sql, -1, &stmt, NULL) != SQLITE_OK) return -1;
+
+    int count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && count < max_count) {
+        out[count].id        = sqlite3_column_int(stmt, 0);
+        out[count].room_id   = sqlite3_column_int(stmt, 1);
+        const char* name    = (const char*)sqlite3_column_text(stmt, 2);
+        const char* ip      = (const char*)sqlite3_column_text(stmt, 3);
+        const char* rtsp    = (const char*)sqlite3_column_text(stmt, 4);
+        strncpy(out[count].name,     name ? name : "", sizeof(out[count].name) - 1);
+        strncpy(out[count].esp32_ip, ip   ? ip   : "", sizeof(out[count].esp32_ip) - 1);
+        strncpy(out[count].rtsp_url, rtsp ? rtsp : "", sizeof(out[count].rtsp_url) - 1);
+        out[count].online    = sqlite3_column_int(stmt, 5);
+        out[count].last_seen = sqlite3_column_int64(stmt, 6);
+        count++;
+    }
+    sqlite3_finalize(stmt);
+    return count;
+}
+
+// 更新 ESP32 在线状态 + 最后心跳时间
+int db_update_esp32_online(void* db, int room_id, int online, int64_t last_seen)
+{
+    const char* sql = "UPDATE room_esp32 SET online = ?, last_seen = ? WHERE room_id = ?";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2((sqlite3*)db, sql, -1, &stmt, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_int(stmt, 1, online);
+    sqlite3_bind_int64(stmt, 2, last_seen);
+    sqlite3_bind_int(stmt, 3, room_id);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE) ? 0 : -1;
 }

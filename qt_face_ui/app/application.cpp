@@ -6,6 +6,7 @@
 #include "ipc/frame_receiver.h"
 #include "ipc/face_ipc_server.h"
 #include "db/db_manager.h"
+#include "widgets/keyboard_drag_helper.h"
 #include <QScreen>
 #include <QDebug>
 #include <QMessageBox>
@@ -64,6 +65,10 @@ FaceApplication::FaceApplication(int &argc, char **argv)
     , m_roiConfigPage(nullptr)
     , m_showingUsb(false)
     , m_usbHideTimer(nullptr)
+    , m_pendingRegMode(0)
+    , m_pendingRegRoom(0)
+    , m_pendingRegDevice(0)
+    , m_pendingRegDuration(0)
 {
     setApplicationName("Lab");
     setOrganizationName("DeviceMonitor");
@@ -87,8 +92,11 @@ FaceApplication::~FaceApplication()
 bool FaceApplication::initialize()
 {
     qDebug() << "[App] Initializing...";
-    
+
     DbManager::instance().init();
+
+    // 启用 tgtsml 输入法键盘的拖动支持（让键盘顶部空白区可拖动）
+    KeyboardDragHelper::instance()->enable();
     
     QList<QScreen*> screens = QGuiApplication::screens();
     qDebug() << "[App] Found" << screens.size() << "screens:";
@@ -322,7 +330,7 @@ void FaceApplication::onCommandResult(int result, const QString& replyName)
 {
     m_showingUsb = false;
     m_usbHideTimer->stop();
-    
+
     QString msg, title;
     switch (result) {
         case 0:   title = "成功"; msg = QString("识别成功\n%1").arg(replyName); break;
@@ -332,9 +340,23 @@ void FaceApplication::onCommandResult(int result, const QString& replyName)
         case -5:  title = "提示"; msg = QString("%1今日已操作").arg(replyName); break;
         default:  title = "错误"; msg = QString("未知错误: %1").arg(result); break;
     }
-    
+
     QMessageBox::information(m_dsiWindow, title, msg);
-    
+
+    // USB 主动登记：识别成功后开插座+倒计时
+    // 无插排时 requestRegister 返回 false，流程继续不阻塞
+    if (m_pendingRegMode == 2 && result == 0 && m_dsiWindow) {
+        bool ok = m_dsiWindow->requestRegister(m_pendingRegRoom,
+                                               m_pendingRegDevice,
+                                               m_pendingRegDuration);
+        qDebug() << "[App] requestRegister 房间" << m_pendingRegRoom
+                 << "设备" << m_pendingRegDevice
+                 << "时长" << m_pendingRegDuration << "->"
+                 << (ok ? "OK" : "FAIL(无插排或开失败)");
+    }
+    // 清除待登记状态（无论成功失败，避免污染下一次操作）
+    m_pendingRegMode = 0;
+
     if (m_dsiWindow) {
         m_dsiWindow->hideUsbCamera();
     }
@@ -411,6 +433,7 @@ void FaceApplication::onRoiBackToHome()
 void FaceApplication::onSignInRequested()
 {
     qDebug() << "[App] Sign in requested";
+    m_pendingRegMode = 0;  // 签到/签退/录入不开插座，清除可能残留的登记状态
     if (m_dsiWindow) {
         m_dsiWindow->showUsbCamera();
         m_showingUsb = true;
@@ -423,6 +446,7 @@ void FaceApplication::onSignInRequested()
 void FaceApplication::onSignOutRequested()
 {
     qDebug() << "[App] Sign out requested";
+    m_pendingRegMode = 0;  // 同上
     if (m_dsiWindow) {
         m_dsiWindow->showUsbCamera();
         m_showingUsb = true;
@@ -477,7 +501,13 @@ void FaceApplication::onDeviceRegisterRequested()
             
             connect(dialog3, &QInputDialog::accepted, [this, dialog3, room, device]() {
                 int duration = dialog3->intValue();
-                
+
+                // 保存待登记信息，识别成功后由 onCommandResult 触发开插座
+                m_pendingRegRoom     = room;
+                m_pendingRegDevice   = device;
+                m_pendingRegDuration = duration;
+                m_pendingRegMode     = 2;  // 设备登记
+
                 if (m_dsiWindow) {
                     m_dsiWindow->showUsbCamera();
                     m_showingUsb = true;
@@ -499,6 +529,7 @@ void FaceApplication::onDeviceRegisterRequested()
 void FaceApplication::onFaceEnrollRequested()
 {
     qDebug() << "[App] Face enroll requested";
+    m_pendingRegMode = 0;  // 人脸录入不开插座，清除可能残留的登记状态
 
     // 自定义对话框：姓名 + 房间号选择
     QDialog* dialog = new QDialog(m_dsiWindow);

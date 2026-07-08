@@ -152,8 +152,10 @@ static int do_face_enroll(const char* person_name, int& out_feature_id, bool& is
     }
     
     int idx = g_cam->current_buffer_index();
-    
+
     // 构建 image_buffer_t
+    // ★ 为 RGA 导出 DMA-BUF fd（比 virt_addr 路径更稳定）
+    int rga_fd = g_cam->export_dma_fd();
     image_buffer_t img;
     img.virt_addr = data;
     img.width = w;
@@ -162,14 +164,15 @@ static int do_face_enroll(const char* person_name, int& out_feature_id, bool& is
     img.height_stride = sh;
     img.format = IMAGE_FORMAT_YUYV422;
     img.size = size;
-    img.fd = -1;
-    
+    img.fd = rga_fd;
+
     // ============ 第三步：执行录入（特征提取 + 去重） ============
     int fid;
     bool dup;
     int ret = g_face->extract_dedup(&img, fid, dup);
-    
-    // 归还缓冲区
+
+    // 释放 RGA fd + 归还缓冲区
+    if (rga_fd >= 0) close(rga_fd);
     g_cam->qbuf(idx);
     
     if (ret == 0) {
@@ -344,20 +347,33 @@ static void* qt_command_handler(void* arg) {
 }
 
 // ================================================================
-// 处理主进程事件的线程
+// 处理主进程 ESP32 识别事件的线程
+// ----------------------------------------------------------------
+// USB 被动识别已废弃，主进程通过 SOCK_PATH_MAIN_FACE 下发
+// Esp32RecognizeEvent（含 rtsp_url），face_process 拉流识别后
+// 回传 Esp32RecognizeResult。
+//
+// 流程：
+//   main → face:  Esp32RecognizeEvent（task_id, type, room, device, rtsp_url）
+//   face → main:  Esp32RecognizeResult（task_id, success, name, ...）
+//
+// task_type:
+//   ESP32_TASK_REGISTER(1): 设备使用登记 → 成功写 device_usage
+//   ESP32_TASK_SIGNIN(2):   主动签到 → 成功写 attendance
+//   ESP32_TASK_SIGNOUT(3):  主动签退 → 成功写 attendance
 // ================================================================
 static void* main_event_handler(void* arg) {
-    FaceEvent event;
-    
-    printf("[FaceService] Main event handler started\n");
-    
+    printf("[FaceService] ESP32 event handler started\n");
+
     while (g_running) {
         if (g_main_face_socket < 0) {
             usleep(100000);
             continue;
         }
-        
-        ssize_t n = recv(g_main_face_socket, &event, sizeof(event), 0);
+
+        Esp32RecognizeEvent ev;
+        memset(&ev, 0, sizeof(ev));
+        ssize_t n = recv(g_main_face_socket, &ev, sizeof(ev), 0);
         if (n <= 0) {
             if (n == 0) {
                 printf("[FaceService] Main process connection closed\n");
@@ -369,35 +385,68 @@ static void* main_event_handler(void* arg) {
             usleep(10000);
             continue;
         }
-        
-        if (n != sizeof(event)) {
+
+        if (n != sizeof(ev)) {
+            printf("[FaceService] 包长异常: %zd (期望 %zu)\n", n, sizeof(ev));
             continue;
         }
-        
-        printf("[FaceService] Main event: room=%d, device=%d\n", 
-               event.room_id, event.device_id);
-        
-        SessionResult res;
-        memset(&res, 0, sizeof(res));
-        bool ok = g_engine->run(0, res);
-        
+
+        printf("[FaceService] ESP32 识别请求: task=%d type=%d 房间%d 设备%d %s\n",
+               ev.task_id, ev.task_type, ev.room_id, ev.device_id, ev.rtsp_url);
+
+        // 调用流识别（OpenCV 拉流 + search_bgr）
+        char name[64] = {0};
+        int  feature_id = 0;
+        bool ok = g_engine->recognize_from_stream(ev, name, feature_id);
+
+        // 构造回传结果
+        Esp32RecognizeResult result;
+        memset(&result, 0, sizeof(result));
+        result.task_id          = ev.task_id;
+        result.room_id          = ev.room_id;
+        result.device_id        = ev.device_id;
+        result.duration_minutes = ev.duration_minutes;
+
         if (ok) {
-            char name[64];
-            if (g_comm->db_query_name(res.feature_id, name, sizeof(name)) != 0) {
-                snprintf(name, sizeof(name), "陌生人(ID_%d)", res.feature_id);
+            result.success    = 1;
+            result.feature_id = feature_id;
+
+            // 查人名（recognize_from_stream 已查，但这里再确认一次）
+            char qname[64] = {0};
+            if (g_comm->db_query_name(feature_id, qname, sizeof(qname)) == 0) {
+                snprintf(result.person_name, sizeof(result.person_name), "%s", qname);
+            } else {
+                snprintf(result.person_name, sizeof(result.person_name),
+                         "陌生人(ID_%d)", feature_id);
             }
-            g_comm->db_write_device_usage(name, event.room_id, event.device_id, 
-                                           event.duration_minutes);
-            event.confirm_duration = event.duration_minutes;
-            printf("[FaceService] Recognition success: %s\n", name);
+
+            // 根据 task_type 写业务记录
+            int room_for_log = ev.room_id;
+            if (ev.task_type == ESP32_TASK_REGISTER) {
+                // 设备使用登记
+                g_comm->db_write_device_usage(result.person_name,
+                                              ev.room_id, ev.device_id,
+                                              ev.duration_minutes);
+                printf("[FaceService] 设备登记: %s 房间%d 设备%d %d分钟\n",
+                       result.person_name, ev.room_id, ev.device_id, ev.duration_minutes);
+            } else if (ev.task_type == ESP32_TASK_SIGNIN) {
+                g_comm->db_write_attendance(result.person_name, "签到", room_for_log);
+                printf("[FaceService] 签到: %s 房间%d\n", result.person_name, room_for_log);
+            } else if (ev.task_type == ESP32_TASK_SIGNOUT) {
+                g_comm->db_write_attendance(result.person_name, "签退", room_for_log);
+                printf("[FaceService] 签退: %s 房间%d\n", result.person_name, room_for_log);
+            }
         } else {
-            event.confirm_duration = 0;
-            printf("[FaceService] Recognition failed\n");
+            result.success = 0;
+            printf("[FaceService] 流识别失败/超时 task=%d\n", ev.task_id);
         }
-        
-        send(g_main_face_socket, &event, sizeof(event), 0);
+
+        // 回传给主进程
+        send(g_main_face_socket, &result, sizeof(result), 0);
+        printf("[FaceService] → main: 识别结果 task=%d success=%d\n",
+               result.task_id, result.success);
     }
-    
+
     return NULL;
 }
 

@@ -23,6 +23,7 @@ DSIMainWindow::DSIMainWindow(QWidget *parent)
     , m_videoRecordPage(nullptr)
     , m_statisticsPage(nullptr)
     , m_systemDashboardPage(nullptr)           // ★ 新增：初始化仪表盘
+    , m_deviceManagePage(nullptr)              // ★ 新增：设备管理页面
     , m_usbCameraView(nullptr)
 {
     // 设置窗口属性
@@ -47,6 +48,7 @@ DSIMainWindow::DSIMainWindow(QWidget *parent)
     m_videoRecordPage = new VideoRecordWindow(this); // 录像记录页面
     m_statisticsPage = new StatisticsWindow(this);   // 统计图表页面
     m_systemDashboardPage = new SystemDashboard(this); // ★ 新增：系统仪表盘页面
+    m_deviceManagePage = new DeviceManageWindow(this); // ★ 新增：设备管理（插座）页面
     
     // ============================================================
     // 将页面添加到堆栈管理器
@@ -60,6 +62,7 @@ DSIMainWindow::DSIMainWindow(QWidget *parent)
     m_stackedWidget->addWidget(m_videoRecordPage);   // 索引 6
     m_stackedWidget->addWidget(m_statisticsPage);    // 索引 7
     m_stackedWidget->addWidget(m_systemDashboardPage); // ★ 新增：索引 8
+    m_stackedWidget->addWidget(m_deviceManagePage);    // ★ 新增：索引 9
     
     // ============================================================
     // 连接各个页面的返回信号
@@ -89,6 +92,11 @@ DSIMainWindow::DSIMainWindow(QWidget *parent)
     connect(m_systemDashboardPage, &SystemDashboard::backToHome, [this]() {
         m_stackedWidget->setCurrentWidget(m_homePage);
     });
+
+    // ★ 新增：设备管理返回信号
+    connect(m_deviceManagePage, &DeviceManageWindow::backToHome, [this]() {
+        m_stackedWidget->setCurrentWidget(m_homePage);
+    });
     
     // ============================================================
     // 主布局：堆栈窗口铺满整个屏幕
@@ -107,6 +115,14 @@ DSIMainWindow::DSIMainWindow(QWidget *parent)
 DSIMainWindow::~DSIMainWindow()
 {
     qDebug() << "[DSIWindow] Destroyed";
+}
+
+// USB 主动登记：识别成功后开插座+倒计时（转发给 DeviceManageWindow）
+// 无插排时底层 onDeviceRegister 返回 false，流程继续不阻塞
+bool DSIMainWindow::requestRegister(int room_id, int device_id, int duration_minutes)
+{
+    if (!m_deviceManagePage) return false;
+    return m_deviceManagePage->requestRegister(room_id, device_id, duration_minutes);
 }
 
 // ================================================================
@@ -191,7 +207,9 @@ QWidget* DSIMainWindow::createHomePage()
     QPushButton* btnRoi = new QPushButton("ROI配置");
     QPushButton* btnStatistics = new QPushButton("数据统计");
     QPushButton* btnDashboard = new QPushButton("系统状态");
-    
+
+    QPushButton* btnDeviceManage = new QPushButton("设备管理");   // ★ 新增：插座控制
+
     // ============================================================
     // 设置按钮大小（统一尺寸）
     // ============================================================
@@ -199,7 +217,8 @@ QWidget* DSIMainWindow::createHomePage()
     QList<QPushButton*> buttons = {
         btnSignIn, btnSignOut, btnDeviceReg, btnFaceEnroll,
         btnQueryAttendance, btnQueryDevice, btnQueryVideo, btnQueryFace,
-        btnDisplayControl, btnRoi, btnStatistics, btnDashboard
+        btnDisplayControl, btnRoi, btnStatistics, btnDashboard,
+        btnDeviceManage
     };
     for (auto* btn : buttons) {
         btn->setFixedSize(btnSize);
@@ -243,35 +262,38 @@ QWidget* DSIMainWindow::createHomePage()
     connect(btnStatistics, &QPushButton::clicked, this, &DSIMainWindow::onStatisticsClicked);
     connect(btnRoi, &QPushButton::clicked, this, &DSIMainWindow::onRoiConfigClicked);
     connect(btnDashboard, &QPushButton::clicked, this, &DSIMainWindow::onDashboardClicked);
-    
+    connect(btnDeviceManage, &QPushButton::clicked, this, &DSIMainWindow::onDeviceManageClicked);
+
     // ============================================================
-    // 布局：3行4列的网格布局
+    // 布局：4行4列的网格布局
     // ============================================================
     QGridLayout* gridLayout = new QGridLayout(page);
     gridLayout->setSpacing(15);
     gridLayout->setContentsMargins(20, 20, 20, 20);
-    
+
     gridLayout->addWidget(btnSignIn, 0, 0);
     gridLayout->addWidget(btnSignOut, 0, 1);
     gridLayout->addWidget(btnDeviceReg, 0, 2);
     gridLayout->addWidget(btnFaceEnroll, 0, 3);
-    
+
     gridLayout->addWidget(btnQueryAttendance, 1, 0);
     gridLayout->addWidget(btnQueryDevice, 1, 1);
     gridLayout->addWidget(btnQueryVideo, 1, 2);
     gridLayout->addWidget(btnQueryFace, 1, 3);
-    
+
     gridLayout->addWidget(btnDisplayControl, 2, 0);
     gridLayout->addWidget(btnRoi, 2, 1);
     gridLayout->addWidget(btnStatistics, 2, 2);
     gridLayout->addWidget(btnDashboard, 2, 3);
-    
-    // 第四行：标题标签（跨4列居中显示）
+
+    gridLayout->addWidget(btnDeviceManage, 3, 0);
+
+    // 第五行：标题标签（跨4列居中显示）
     QLabel* titleLabel = new QLabel("实验室设备与人员管理系统");
     titleLabel->setAlignment(Qt::AlignCenter);
     titleLabel->setStyleSheet("font-size: 28px; font-weight: bold; color: #3498db; margin: 20px;");
-    gridLayout->addWidget(titleLabel, 3, 0, 1, 4);
-    
+    gridLayout->addWidget(titleLabel, 4, 0, 1, 4);
+
     return page;
 }
 
@@ -505,5 +527,14 @@ void DSIMainWindow::onDashboardClicked()
     qDebug() << "[DSI] Dashboard clicked";
     if (m_systemDashboardPage) {
         m_stackedWidget->setCurrentWidget(m_systemDashboardPage);
+    }
+}
+
+// ★ 新增：设备管理按钮跳转到设备管理页面
+void DSIMainWindow::onDeviceManageClicked()
+{
+    qDebug() << "[DSI] Device Manage clicked";
+    if (m_deviceManagePage) {
+        m_stackedWidget->setCurrentWidget(m_deviceManagePage);
     }
 }

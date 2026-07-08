@@ -172,6 +172,15 @@ int main(int argc, char *argv[]) {
         // 轮询 ROI 重载命令（非阻塞，由 QT 端保存 ROI 后触发）
         phase2_poll_roi_reload();
 
+        // 轮询 QT → 主进程 命令（手动断电等，非阻塞）
+        phase2_poll_qt_main();
+
+        // 轮询 device_process 连接（非阻塞 accept）
+        phase2_poll_device();
+
+        // 轮询 face_process 回传的 ESP32 识别结果（非阻塞）
+        phase2_poll_face_result();
+
         // 推帧给QT UI
         if (qt_sock >= 0 && g_cfg.channel_count > 0) {
             for (int i = 0; i < g_cfg.channel_count; i++) {

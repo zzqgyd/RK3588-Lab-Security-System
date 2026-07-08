@@ -45,6 +45,7 @@ int main(int argc, char *argv[])
     
     // 设置信号处理
     signal(SIGINT, sigint_handler);
+    signal(SIGPIPE, SIG_IGN);   // 写已关闭的 socket 不杀进程（返回 EPIPE）
     
     // 初始化
     if (!app.initialize()) {

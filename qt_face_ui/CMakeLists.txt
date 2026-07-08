@@ -11,14 +11,15 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
 # 查找 Qt5 模块（需要 OpenGL 支持）
-find_package(Qt5 REQUIRED COMPONENTS 
-    Core 
-    Widgets 
-    Gui 
-    OpenGL 
-    Sql 
+find_package(Qt5 REQUIRED COMPONENTS
+    Core
+    Widgets
+    Gui
+    OpenGL
+    Sql
     Network
-    Charts  
+    Charts
+    Concurrent
 )
 
 # ================================================================
@@ -36,10 +37,13 @@ set(SOURCES
     windows/dsi_window.cpp
     ipc/frame_receiver.cpp
     ipc/face_ipc_server.cpp
+    ipc/device_ipc_client.cpp
+    ../ipc/ipc_socket.cpp
     widgets/gl_stream_view.cpp
     widgets/nv12_texture.cpp
     widgets/yuyv_texture.cpp
     widgets/yuv_shader.cpp
+    widgets/keyboard_drag_helper.cpp
     db/db_manager.cpp
     windows/face_list_window.cpp
     windows/attendance_window.cpp
@@ -49,6 +53,7 @@ set(SOURCES
     windows/system_dashboard.cpp
     windows/roi_config_window.cpp
     widgets/roi_edit_view.cpp
+    windows/device_manage_window.cpp
 )
 
 set(HEADERS
@@ -58,10 +63,12 @@ set(HEADERS
     windows/dsi_window.h
     ipc/frame_receiver.h
     ipc/face_ipc_server.h
+    ipc/device_ipc_client.h
     widgets/gl_stream_view.h
     widgets/nv12_texture.h
     widgets/yuyv_texture.h
     widgets/yuv_shader.h
+    widgets/keyboard_drag_helper.h
     db/db_manager.h
     windows/face_list_window.h
     windows/attendance_window.h
@@ -71,6 +78,7 @@ set(HEADERS
     windows/system_dashboard.h
     windows/roi_config_window.h
     widgets/roi_edit_view.h
+    windows/device_manage_window.h
 )
 
 # ================================================================
@@ -92,7 +100,8 @@ target_link_libraries(qt_face_ui
     Qt5::OpenGL
     Qt5::Sql
     Qt5::Network
-    Qt5::Charts 
+    Qt5::Charts
+    Qt5::Concurrent
 )
 
 # 链接 OpenGL 库（RK3588 需要）

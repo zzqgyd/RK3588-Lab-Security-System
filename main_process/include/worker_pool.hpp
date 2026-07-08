@@ -101,6 +101,26 @@ int phase2_reload_roi();
 void phase2_poll_roi_reload();
 
 /**
+ * @brief 轮询 QT → 主进程 命令（非阻塞）
+ *
+ * 处理 QT 端发来的命令（如手动断电）：
+ *   - MAIN_CMD_POWER_OFF: 清空设备状态 + 转发 RELEASE 给 device_process
+ *
+ * 由主循环周期性调用。
+ */
+void phase2_poll_qt_main();
+
+/**
+ * @brief 轮询 device_process 连接（非阻塞 accept）
+ *
+ * 主进程作为服务端监听 SOCK_PATH_MAIN_DEVICE，
+ * device_process 启动后主动连接，此函数 accept 并保存 fd。
+ *
+ * 由主循环周期性调用。
+ */
+void phase2_poll_device();
+
+/**
  * @brief 把指定路的设备占用状态填入 FrameMeta（用于 Qt ROI 框颜色/文字）
  *
  * 读取 g_state_mgr 中该路各设备的 silent_until_expire 状态：
@@ -114,5 +134,17 @@ void phase2_poll_roi_reload();
  *       如需强一致可后续给状态机加自旋锁。
  */
 void phase2_fill_device_status(FrameMeta* meta, int stream_id);
+
+/**
+ * @brief 轮询 face_process → main_process 的 ESP32 识别结果（非阻塞）
+ *
+ * face_process 识别完成后通过 SOCK_PATH_MAIN_FACE 回传 Esp32RecognizeResult。
+ * main 收到后：
+ *   1. 成功登记：ds_set_silent + mark_registered（标记设备使用中）
+ *   2. 转发给 device_process（开插座 + MQTT 回 ESP32）
+ *
+ * 由主循环周期性调用。
+ */
+void phase2_poll_face_result();
 
 #endif // WORKER_POOL_HPP

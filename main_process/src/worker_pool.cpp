@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <chrono>
+#include <mutex>
 #include <shared_mutex>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -57,6 +58,16 @@ static int                    g_skip_counter[MAX_CHANNEL] = {0};  // 每路跳�
 static std::shared_mutex      g_roi_mutex;            // 读写锁：保护 g_roi
 static int                    g_roi_listen_fd = -1;   // ROI 重载命令监听 socket
 static int                    g_roi_client_fd = -1;   // ROI 重载命令客户端 fd
+
+// 设备进程 IPC 相关（主进程作为服务端，device_process 主动连接）
+static int                    g_device_listen_fd = -1;  // 监听 fd（SOCK_PATH_MAIN_DEVICE）
+static int                    g_device_client_fd = -1;  // device_process 连接的 fd
+// 串行化 send_device_event 的 send+recv（多 worker 并发会串 ack）
+static std::mutex             g_device_mutex;
+
+// QT → 主进程 命令 socket（手动断电等）
+static int                    g_qtmain_listen_fd = -1;  // 监听 fd
+static int                    g_qtmain_client_fd = -1;  // 客户端 fd
 
 // ================================================================
 // 辅助函数
@@ -140,98 +151,174 @@ void WorkerPool::worker_loop(int worker_id)
     printf("[Worker %d] Stopped\n", worker_id);
 }
 
-// ============================================================
-// 确保客户端已连接，如果没有则接受新连接
-// ============================================================
-static bool ensure_face_client_connected()
+// ================================================================
+// 设备进程 IPC 服务端
+// ----------------------------------------------------------------
+// 主进程作为服务端监听 SOCK_PATH_MAIN_DEVICE
+// device_process 启动后主动连接，保持长连接
+// 设备登记成功时发 REGISTER，手动断电/超时清状态时发 RELEASE
+// ================================================================
+
+// 非阻塞 accept device_process 连接
+// 在主循环中调用，accept 成功后保存 fd
+static void accept_device_connection()
 {
-    // 如果已有客户端连接且有效，直接返回 true
-    if (g_client_fd >= 0) {
-        return true;
+    if (g_device_listen_fd < 0) return;
+
+    int fd = accept(g_device_listen_fd, NULL, NULL);
+    if (fd < 0) {
+        // EAGAIN/EWOULDBLOCK 表示无新连接，正常
+        return;
     }
-    
-    // 检查监听 socket 是否有效
-    if (g_listen_fd < 0) {
-        return false;
-    }
-    
-    // 尝试接受新连接（非阻塞）
-    int client_fd = accept(g_listen_fd, NULL, NULL);
-    if (client_fd >= 0) {
-        // 设置非阻塞模式
-        int flags = fcntl(client_fd, F_GETFL, 0);
-        if (flags >= 0) {
-            fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
+
+    // ★ 设置 O_NONBLOCK，确保所有 recv/send 都不阻塞
+    int flg = fcntl(fd, F_GETFL, 0);
+    if (flg >= 0) fcntl(fd, F_SETFL, flg | O_NONBLOCK);
+
+    // 如果有旧连接，先关闭（try_lock 避免阻塞主循环）
+    {
+        std::unique_lock<std::mutex> lk(g_device_mutex, std::try_to_lock);
+        if (!lk.owns_lock()) {
+            // worker 正在 send，延迟到下一轮再 accept
+            close(fd);
+            return;
         }
-        g_client_fd = client_fd;
-        printf("[Worker] Face process connected (fd=%d)\n", client_fd);
-        return true;
+        if (g_device_client_fd >= 0) {
+            close(g_device_client_fd);
+        }
+        g_device_client_fd = fd;
     }
-    
-    return false;
+    printf("[Worker] device_process connected (fd=%d)\n", fd);
 }
 
 // ================================================================
-// 发送人脸识别触发事件到人脸进程（通过 Socket）
+// ESP32 识别流程：转发函数
+// ----------------------------------------------------------------
+// main 在 ESP32 流程中充当中转：
+//   device → main(tag=1) → face → main → device
+//   device → main(tag=2) → main 自行处理(RELEASE/CANCEL)
 // ================================================================
-static void send_face_trigger_event(int stream_id, int device_id, int duration_minutes)
+
+// 确保 face_process 已连接（非阻塞 accept）
+static bool ensure_face_client_connected()
 {
-    // ★ 先确保客户端已连接
+    if (g_client_fd >= 0) return true;
+    if (g_listen_fd < 0) return false;
+
+    int fd = accept(g_listen_fd, NULL, NULL);
+    if (fd >= 0) {
+        int flags = fcntl(fd, F_GETFL, 0);
+        if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        g_client_fd = fd;
+        printf("[Worker] Face process connected (fd=%d)\n", fd);
+        return true;
+    }
+    return false;
+}
+
+// 转发 Esp32RecognizeEvent 给 face_process（main → face）
+static void forward_esp32_event_to_face(const Esp32RecognizeEvent& ev)
+{
     if (!ensure_face_client_connected()) {
-        printf("[Worker] Warning: face client not connected, cannot send event\n");
+        printf("[Worker] face_process 未连接，丢弃 ESP32 识别请求 task=%d\n", ev.task_id);
         return;
     }
-    
-    // 构建事件结构体（与 face_service 中定义的一致）
-    FaceEvent event;
-    memset(&event, 0, sizeof(event));
-    event.room_id = stream_id;
-    event.device_id = device_id;
-    event.duration_minutes = duration_minutes;
-    event.confirm_duration = 0;
-    
-    // 发送到人脸进程
-    ssize_t n = send(g_client_fd, &event, sizeof(event), 0);
-    if (n != sizeof(event)) {
-        printf("[Worker] Failed to send face trigger event: %zd\n", n);
-        // 发送失败，关闭连接，下次会重新 accept
+    ssize_t n = send(g_client_fd, &ev, sizeof(ev), 0);
+    if (n != sizeof(ev)) {
+        printf("[Worker] send Esp32RecognizeEvent failed: %zd\n", n);
         close(g_client_fd);
         g_client_fd = -1;
     } else {
-        printf("[Worker] Sent face trigger: stream=%d, device=%d\n", stream_id, device_id);
+        printf("[Worker] → face: ESP32 识别请求 task=%d 房间%d 设备%d %s\n",
+               ev.task_id, ev.room_id, ev.device_id, ev.rtsp_url);
     }
 }
 
-// ================================================================
-// 接收人脸识别确认结果（从 Socket 读取）
-// ============================================================
-static bool receive_face_confirm(int& room_id, int& device_id, int& duration)
+// 处理 ESP32 发起的 DeviceEvent（RELEASE=终止 / event=4=超时取消）
+static void handle_esp32_device_event(const DeviceEvent& ev)
 {
-    if (g_client_fd < 0) return false;
-    
-    // 设置超时：非阻塞读取
-    struct timeval tv;
-    tv.tv_sec = 0;
-    tv.tv_usec = 100000;  // 100ms 超时
-    setsockopt(g_client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    
-    FaceEvent event;
-    ssize_t n = recv(g_client_fd, &event, sizeof(event), 0);
-    
-    if (n == sizeof(event)) {
-        room_id = event.room_id;
-        device_id = event.device_id;
-        duration = event.confirm_duration;
-        return true;
+    printf("[Worker] ESP32 事件: event=%d 房间%d 设备%d\n",
+           ev.event, ev.room_id, ev.device_id);
+    // 两种情况都清检测状态 + 取消录像标记
+    ds_reset_device(&g_state_mgr, ev.room_id, ev.device_id);
+    if (g_recorder_pool) {
+        g_recorder_pool->mark_registered(ev.room_id, false);
     }
-    
-    // 如果连接断开，关闭 fd
-    if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
-        close(g_client_fd);
-        g_client_fd = -1;
+}
+
+// 转发 Esp32RecognizeResult 给 device_process（main → device）
+// ★ fire-and-forget：只发送，不等 ack。ack 由主循环 phase2_poll_device 消费
+// ★ try_lock：锁忙时丢弃（识别结果丢失概率极低，本地 IPC 亚毫秒）
+// ★ tag=1 + Esp32RecognizeResult(88 bytes)
+static bool forward_esp32_result_to_device(const Esp32RecognizeResult& result)
+{
+    std::unique_lock<std::mutex> lk(g_device_mutex, std::try_to_lock);
+    if (!lk.owns_lock()) {
+        printf("[Worker] device_process 锁忙，丢弃识别结果 task=%d\n", result.task_id);
+        return false;
     }
-    
-    return false;
+
+    if (g_device_client_fd < 0) {
+        printf("[Worker] device_process 未连接，丢弃识别结果 task=%d\n", result.task_id);
+        return false;
+    }
+
+    // ★ 合并 tag+payload 到单次 send，保证原子性，避免 device 端读到半条
+    struct { int tag; Esp32RecognizeResult result; } pkt;
+    pkt.tag    = 1;
+    pkt.result = result;
+    ssize_t n = send(g_device_client_fd, &pkt, sizeof(pkt), MSG_DONTWAIT);
+    if (n != sizeof(pkt)) {
+        printf("[Worker] send Esp32RecognizeResult failed，丢弃 task=%d\n", result.task_id);
+        return false;
+    }
+
+    // ★ 不等 ack！直接返回。ack(tag=3) 由 phase2_poll_device 消费
+    return true;
+}
+
+// 发送事件给 device_process（fire-and-forget，完全不阻塞）
+//   event: DEVICE_EVENT_REGISTER / DEVICE_EVENT_RELEASE
+//   ★ 只发送，不等 ack。ack 由主循环 phase2_poll_device 异步消费
+//   ★ try_lock：锁忙时丢弃事件（REGISTER/RELEASE 都是幂等的，丢一次没关系）
+//   ★ MSG_DONTWAIT：send 非阻塞，socket buffer 满时丢弃
+//
+// ★★ Tag-based protocol (main → device):
+//   先发 4 字节 tag，再发 payload，避免 device 端 MSG_PEEK 按长度匹配
+//   （多消息合并时 MSG_PEEK 长度不等于任何单条消息大小，导致死循环）
+//   tag=0: DeviceEvent(16 bytes)
+//   tag=1: Esp32RecognizeResult(88 bytes)
+static bool send_device_event(int event, int room_id, int device_id, int duration_minutes)
+{
+    // ★ try_lock：锁被占用时丢弃事件，绝不阻塞 worker 线程
+    std::unique_lock<std::mutex> lk(g_device_mutex, std::try_to_lock);
+    if (!lk.owns_lock()) {
+        return false;  // 另一个 worker 在用，跳过
+    }
+
+    if (g_device_client_fd < 0) {
+        return false;
+    }
+
+    // ★ 合并 tag+payload 到单次 send，保证原子性，避免 device 端读到半条
+    DeviceEvent ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.event           = event;
+    ev.room_id         = room_id;
+    ev.device_id       = device_id;
+    ev.duration_minutes = duration_minutes;
+
+    struct { int tag; DeviceEvent ev; } pkt;
+    pkt.tag = 0;
+    pkt.ev  = ev;
+    ssize_t n = send(g_device_client_fd, &pkt, sizeof(pkt), MSG_DONTWAIT);
+    if (n != sizeof(pkt)) {
+        // buffer 满或连接断开，丢弃事件（幂等，下次会重试）
+        return false;
+    }
+
+    // ★ 不等 ack！直接返回。ack 由 phase2_poll_device 在主循环中消费
+    return true;
 }
 
 // ================================================================
@@ -332,14 +419,15 @@ void WorkerPool::process_frame(worker_context_t* worker_ctx, FramePtr frame)
         DeviceROI* roi = &sc_local.devices[d];
 
         int event = ds_update(&g_state_mgr, all_boxes, box_count, stream_id, roi);
-        
-        // ★ 事件bit0: 触发人脸识别（通过 Socket 发送）
+
+        // ★ 事件bit0: 设备区域有人超阈值 → 通知 device_process 触发 ESP32 识别流程
+        //   （USB 被动识别已废弃，改由 ESP32 推流 → face_process 拉流识别）
+        //   device_process 收到 REGISTER 后：MQTT 通知 ESP32 → 等 ready → 拉流识别
+        //   识别结果异步回传：device → main → face → main → device
         if (event & 1) {
-            printf("[Worker %d] Trigger face recognition: stream=%d, device=%d\n",
+            printf("[Worker %d] 触发设备登记: stream=%d, device=%d -> 通知 device_process (ESP32流程)\n",
                    worker_ctx->worker_id, stream_id, roi->device_id);
-            
-            // ★ 改为通过 Socket 发送事件，不再使用共享内存
-            send_face_trigger_event(stream_id, roi->device_id, 15);
+            send_device_event(DEVICE_EVENT_REGISTER, stream_id, roi->device_id, 15);
         }
         
         // 事件bit1: 开始录像
@@ -368,22 +456,9 @@ void WorkerPool::process_frame(worker_context_t* worker_ctx, FramePtr frame)
     }
     
     // ============================================================
-    // 4. 检查人脸识别确认结果（从 Socket 读取）
+    // 4. ESP32 识别结果处理已移至 phase2_poll_face_result()
+    //    （异步流程：device → main → face → main → device）
     // ============================================================
-    int room, dev, dur;
-    if (receive_face_confirm(room, dev, dur)) {
-        if (dur > 0) {
-            printf("[Worker %d] Face confirmed: room=%d, device=%d, silent=%d min\n",
-                   worker_ctx->worker_id, room, dev, dur);
-            ds_set_silent(&g_state_mgr, room, dev, dur);
-
-            if (g_recorder_pool) {
-                g_recorder_pool->mark_registered(room, true);
-            }
-        } else {
-            printf("[Worker %d] Face recognition failed\n", worker_ctx->worker_id);
-        }
-    }
 }
 
 // ================================================================
@@ -441,7 +516,41 @@ void phase2_init(const char* db_path)
         g_roi_client_fd = -1;
         printf("[Phase2] ROI reload socket created: %s (listening)\n", SOCK_PATH_MAIN_ROI);
     }
-    
+
+    // ================================================================
+    // 5.2 ★ 创建 QT → 主进程 命令 Socket（手动断电等）
+    // ================================================================
+    g_qtmain_listen_fd = ipc_sock_server_create(SOCK_PATH_QT_MAIN, 5);
+    if (g_qtmain_listen_fd < 0) {
+        printf("[Phase2] Warning: Failed to create qt-main socket: %s\n", SOCK_PATH_QT_MAIN);
+    } else {
+        int qflg = fcntl(g_qtmain_listen_fd, F_GETFL, 0);
+        if (qflg >= 0) {
+            fcntl(g_qtmain_listen_fd, F_SETFL, qflg | O_NONBLOCK);
+        }
+        g_qtmain_client_fd = -1;
+        printf("[Phase2] QT-main cmd socket created: %s (listening)\n", SOCK_PATH_QT_MAIN);
+    }
+
+    // ================================================================
+    // 5.3 ★ 创建 主进程 → 设备进程 事件 Socket（主进程作为服务端）
+    // ----------------------------------------------------------------
+    // device_process 启动后主动连接此 socket，保持长连接
+    // 主进程通过此连接发送 REGISTER / RELEASE 事件
+    // ================================================================
+    g_device_listen_fd = ipc_sock_server_create(SOCK_PATH_MAIN_DEVICE, 5);
+    if (g_device_listen_fd < 0) {
+        printf("[Phase2] Warning: Failed to create device socket: %s\n", SOCK_PATH_MAIN_DEVICE);
+    } else {
+        int dflg = fcntl(g_device_listen_fd, F_GETFL, 0);
+        if (dflg >= 0) {
+            fcntl(g_device_listen_fd, F_SETFL, dflg | O_NONBLOCK);
+        }
+        g_device_client_fd = -1;
+        printf("[Phase2] Device socket created: %s (listening, waiting for device_process)\n",
+               SOCK_PATH_MAIN_DEVICE);
+    }
+
     // 6. 打开数据库
     g_main_db = db_open(db_path);
     
@@ -487,6 +596,29 @@ void phase2_deinit()
     if (g_roi_listen_fd >= 0) {
         ipc_sock_close(g_roi_listen_fd, SOCK_PATH_MAIN_ROI);
         g_roi_listen_fd = -1;
+    }
+
+    // 4.2 关闭 QT → 主进程 命令 Socket
+    if (g_qtmain_client_fd >= 0) {
+        close(g_qtmain_client_fd);
+        g_qtmain_client_fd = -1;
+    }
+    if (g_qtmain_listen_fd >= 0) {
+        ipc_sock_close(g_qtmain_listen_fd, SOCK_PATH_QT_MAIN);
+        g_qtmain_listen_fd = -1;
+    }
+
+    // 4.3 关闭 device_process 服务端 Socket
+    {
+        std::lock_guard<std::mutex> lk(g_device_mutex);
+        if (g_device_client_fd >= 0) {
+            close(g_device_client_fd);
+            g_device_client_fd = -1;
+        }
+    }
+    if (g_device_listen_fd >= 0) {
+        ipc_sock_close(g_device_listen_fd, SOCK_PATH_MAIN_DEVICE);
+        g_device_listen_fd = -1;
     }
 
     g_phase2_inited = false;
@@ -558,6 +690,258 @@ void phase2_poll_roi_reload()
         // 客户端断开
         close(g_roi_client_fd);
         g_roi_client_fd = -1;
+    }
+}
+
+// ================================================================
+// phase2_poll_qt_main：轮询 QT → 主进程 命令（非阻塞）
+// ----------------------------------------------------------------
+// 目前支持：
+//   MAIN_CMD_POWER_OFF: 手动断电
+//     1. 清空检测状态机的设备状态（结束免打扰、允许重新触发）
+//     2. 通知录像线程池该房间取消"已登记"标记
+//     3. 转发 RELEASE 事件给 device_process（关闭插座 + 取消倒计时）
+//     4. 回 MainAck 给 QT
+// ================================================================
+void phase2_poll_qt_main()
+{
+    if (!g_phase2_inited) return;
+    if (g_qtmain_listen_fd < 0) return;
+
+    // 1. 没有客户端则非阻塞 accept
+    if (g_qtmain_client_fd < 0) {
+        int fd = accept(g_qtmain_listen_fd, NULL, NULL);
+        if (fd >= 0) {
+            int flg = fcntl(fd, F_GETFL, 0);
+            if (flg >= 0) fcntl(fd, F_SETFL, flg | O_NONBLOCK);
+            g_qtmain_client_fd = fd;
+            printf("[Phase2] QT-main client connected fd=%d\n", fd);
+        } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            perror("[Phase2] qt-main accept");
+        }
+    }
+
+    if (g_qtmain_client_fd < 0) return;
+
+    // 2. 非阻塞读取 MainCmd
+    MainCmd mcmd;
+    memset(&mcmd, 0, sizeof(mcmd));
+    ssize_t n = recv(g_qtmain_client_fd, &mcmd, sizeof(mcmd), 0);
+    if (n <= 0) {
+        if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+            close(g_qtmain_client_fd);
+            g_qtmain_client_fd = -1;
+        }
+        return;
+    }
+    if (n != sizeof(mcmd)) {
+        printf("[Phase2] qt-main bad cmd len: %zd\n", n);
+        return;
+    }
+
+    // 3. 处理命令
+    MainAck ack;
+    memset(&ack, 0, sizeof(ack));
+    ack.result = 0;
+
+    switch (mcmd.cmd) {
+        case MAIN_CMD_POWER_OFF: {
+            int room = mcmd.room_id;
+            int dev  = mcmd.device_id;
+            printf("[Phase2] QT manual power-off: room=%d device=%d\n", room, dev);
+
+            // (1) 清空检测状态机的设备状态（结束使用，允许重新登记）
+            ds_reset_device(&g_state_mgr, room, dev);
+
+            // (2) 取消录像"已登记"标记
+            if (g_recorder_pool) {
+                g_recorder_pool->mark_registered(room, false);
+            }
+
+            // (3) 转发 RELEASE 给 device_process（关闭插座 + 取消倒计时）
+            send_device_event(DEVICE_EVENT_RELEASE, room, dev, 0);
+            break;
+        }
+        default:
+            printf("[Phase2] unknown qt-main cmd: %d\n", mcmd.cmd);
+            ack.result = -1;
+    }
+
+    // 4. 回执
+    send(g_qtmain_client_fd, &ack, sizeof(ack), 0);
+}
+
+// ================================================================
+// phase2_poll_device：轮询 device_process 连接 + 消息（非阻塞）
+// ----------------------------------------------------------------
+// 在主循环中调用：
+//   1. accept device_process 的连接请求
+//   2. 非阻塞 recv device→main 的所有待处理消息（循环排空）
+//      tag=0: DeviceEvent ack（fire-and-forget 的 ack，读掉即可）
+//      tag=1: Esp32RecognizeEvent → 转发给 face_process
+//      tag=2: DeviceEvent(ESP32 RELEASE/CANCEL) → 清检测状态
+//      tag=3: Esp32RecognizeResult ack（读掉即可）
+//
+// ★★ Peek-then-consume 模式：
+//   先 MSG_PEEK 整条消息（tag+payload），只有全部到齐才消费。
+//   避免消费 tag 后 payload 尚未到达 → 下次把 payload 字节误读为 tag
+//   导致协议失步。
+// ================================================================
+void phase2_poll_device()
+{
+    accept_device_connection();
+
+    if (g_device_client_fd < 0) return;
+
+    // try_lock：worker 正在 send 时跳过
+    if (!g_device_mutex.try_lock()) return;
+
+    // ★ 循环排空所有待处理消息（最多 32 条，防止极端情况卡住主循环）
+    for (int i = 0; i < 32; i++) {
+        // ★ 1. peek tag（4字节，不消费）
+        int tag = -1;
+        ssize_t n = recv(g_device_client_fd, &tag, sizeof(tag), MSG_PEEK | MSG_DONTWAIT);
+        if (n <= 0) {
+            if (n == 0) {
+                // 连接断开
+                close(g_device_client_fd);
+                g_device_client_fd = -1;
+            }
+            // EAGAIN = 无数据，正常
+            break;
+        }
+        if (n < (ssize_t)sizeof(tag)) {
+            break;  // tag 不完整，下次再读
+        }
+
+        // ★ 2. 根据 tag 决定 payload 大小
+        size_t payload_size = 0;
+        if (tag == 0 || tag == 2) {
+            payload_size = sizeof(DeviceEvent);          // 16
+        } else if (tag == 1) {
+            payload_size = sizeof(Esp32RecognizeEvent);  // 148
+        } else if (tag == 3) {
+            payload_size = sizeof(int);                  // 4
+        } else {
+            // 未知 tag：消费掉 tag 防止死循环
+            fprintf(stderr, "[Worker] poll_device: 未知 tag=%d，丢弃\n", tag);
+            recv(g_device_client_fd, &tag, sizeof(tag), MSG_DONTWAIT);
+            continue;
+        }
+
+        // ★ 3. peek 整条消息（tag+payload），确认全部到齐才消费
+        size_t total = sizeof(tag) + payload_size;
+        char peek_buf[256];  // 足够容纳最大消息（4+148=152）
+        n = recv(g_device_client_fd, peek_buf, total, MSG_PEEK | MSG_DONTWAIT);
+        if (n < (ssize_t)total) {
+            break;  // 整条未到齐，下次再读（不消费任何字节）
+        }
+
+        // ★ 4. 整条到齐，消费 tag（此时 payload 一定可读全）
+        n = recv(g_device_client_fd, &tag, sizeof(tag), MSG_DONTWAIT);
+        if (n != (ssize_t)sizeof(tag)) break;
+
+        // ★ 5. 消费 payload
+        if (tag == 1) {
+            // Esp32RecognizeEvent → 转发给 face_process
+            Esp32RecognizeEvent esp_ev;
+            memset(&esp_ev, 0, sizeof(esp_ev));
+            n = recv(g_device_client_fd, &esp_ev, sizeof(esp_ev), MSG_DONTWAIT);
+            if (n != (ssize_t)sizeof(esp_ev)) break;
+            // 解锁后再转发（forward 内部会加锁 face_client）
+            g_device_mutex.unlock();
+            forward_esp32_event_to_face(esp_ev);
+            // 重新加锁继续排空
+            if (!g_device_mutex.try_lock()) return;
+        } else if (tag == 2) {
+            // DeviceEvent（ESP32 RELEASE/CANCEL）
+            DeviceEvent dev_ev;
+            memset(&dev_ev, 0, sizeof(dev_ev));
+            n = recv(g_device_client_fd, &dev_ev, sizeof(dev_ev), MSG_DONTWAIT);
+            if (n != (ssize_t)sizeof(dev_ev)) break;
+            g_device_mutex.unlock();
+            handle_esp32_device_event(dev_ev);
+            if (!g_device_mutex.try_lock()) return;
+        } else if (tag == 0) {
+            // DeviceEvent ack（fire-and-forget），读掉 payload 即可
+            DeviceEvent ack;
+            recv(g_device_client_fd, &ack, sizeof(ack), MSG_DONTWAIT);
+        } else if (tag == 3) {
+            // Esp32RecognizeResult ack，读掉 payload 即可
+            int ack_val = 0;
+            recv(g_device_client_fd, &ack_val, sizeof(ack_val), MSG_DONTWAIT);
+        }
+    }
+
+    g_device_mutex.unlock();
+}
+
+// ================================================================
+// phase2_poll_face_result：轮询 face→main 识别结果（非阻塞）
+// ----------------------------------------------------------------
+// face_process 识别完成后发送 Esp32RecognizeResult
+// main 收到后：
+//   1. 成功：ds_set_silent + mark_registered（标记设备使用中）
+//   2. 转发给 device_process（开插座 + MQTT 回 ESP32）
+// ================================================================
+void phase2_poll_face_result()
+{
+    if (!g_phase2_inited) return;
+    if (g_client_fd < 0) {
+        ensure_face_client_connected();
+        return;
+    }
+
+    // 非阻塞 peek
+    char peek_buf[sizeof(Esp32RecognizeResult)];
+    ssize_t pn = recv(g_client_fd, peek_buf, sizeof(peek_buf), MSG_PEEK);
+    if (pn < (ssize_t)sizeof(Esp32RecognizeResult)) {
+        // 无数据或连接断开
+        if (pn == 0 || (pn < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+            close(g_client_fd);
+            g_client_fd = -1;
+        }
+        return;
+    }
+
+    // 读完整的 Esp32RecognizeResult
+    Esp32RecognizeResult result;
+    memset(&result, 0, sizeof(result));
+    ssize_t n = recv(g_client_fd, &result, sizeof(result), 0);
+    if (n != sizeof(result)) {
+        fprintf(stderr, "[Worker] recv Esp32RecognizeResult failed: %zd\n", n);
+        close(g_client_fd);
+        g_client_fd = -1;
+        return;
+    }
+
+    printf("[Worker] ← face: 识别结果 task=%d success=%d user=%s 房间%d 设备%d\n",
+           result.task_id, result.success, result.person_name,
+           result.room_id, result.device_id);
+
+    // 1. 成功：标记设备使用中（设置 silent + 录像标记）
+    if (result.success && result.duration_minutes > 0) {
+        ds_set_silent(&g_state_mgr, result.room_id, result.device_id,
+                      result.duration_minutes);
+        if (g_recorder_pool) {
+            g_recorder_pool->mark_registered(result.room_id, true);
+        }
+        printf("[Worker] 设备登记成功: 房间%d 设备%d (%d分钟) 用户=%s\n",
+               result.room_id, result.device_id, result.duration_minutes,
+               result.person_name);
+    } else if (result.success) {
+        // 签到/签退成功（duration=0），不需要设 silent
+        printf("[Worker] 考勤记录: %s 房间%d\n",
+               result.person_name, result.room_id);
+    } else {
+        printf("[Worker] 识别失败 task=%d\n", result.task_id);
+    }
+
+    // 2. 转发给 device_process（开插座 / MQTT 回 ESP32）
+    //    USB 主动登记(task_id=-1)只做状态标记，不转发给 device
+    //    （开插座由 QT 端 requestRegister 单独完成，避免重复）
+    if (result.task_id >= 0) {
+        forward_esp32_result_to_device(result);
     }
 }
 

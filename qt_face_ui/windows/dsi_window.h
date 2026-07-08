@@ -16,6 +16,7 @@
 #include "windows/video_record_window.h"
 #include "windows/statistics_window.h"
 #include "windows/system_dashboard.h"      // ★ 新增：系统仪表盘
+#include "windows/device_manage_window.h"  // ★ 新增：设备管理（插座）
 #include "widgets/gl_stream_view.h"
 
 /**
@@ -36,6 +37,9 @@ class DSIMainWindow : public QWidget
 public:
     explicit DSIMainWindow(QWidget *parent = nullptr);
     ~DSIMainWindow();
+
+    // USB 主动登记：识别成功后开插座（转发给 DeviceManageWindow）
+    bool requestRegister(int room_id, int device_id, int duration_minutes);
 
 signals:
     // ============================================================
@@ -90,6 +94,7 @@ private slots:
     void onStatisticsClicked();         // 数据统计
     void onRoiConfigClicked();          // ROI 配置
     void onDashboardClicked();          // 系统状态（★ 修改：跳转到仪表盘页面）
+    void onDeviceManageClicked();       // ★ 新增：设备管理（插座）
 
 private:
     // ============================================================
@@ -121,6 +126,7 @@ private:
     VideoRecordWindow* m_videoRecordPage;   // 录像记录页面
     StatisticsWindow* m_statisticsPage;     // 数据统计页面
     SystemDashboard*  m_systemDashboardPage; // ★ 新增：系统仪表盘页面
+    DeviceManageWindow* m_deviceManagePage;  // ★ 新增：设备管理（插座）页面
     
     // USB 摄像头视频显示控件
     GLStreamView* m_usbCameraView;          // OpenGL 视频显示控件

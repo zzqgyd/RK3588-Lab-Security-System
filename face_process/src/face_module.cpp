@@ -147,6 +147,9 @@ int FaceModule::search(const image_buffer_t* img, FaceResult& result) {
         return -1;
     }
 
+    // ★ 加锁：防止 qt_command_handler 的 extract_dedup 并发访问 Session/RGA
+    std::lock_guard<std::mutex> lk(mutex_);
+
     auto session = *(std::shared_ptr<inspire::Session>*)session_; // 取出 Session
 
     // ============ 1. YUYV → BGR 转换（RGA 硬件加速） ============
@@ -238,6 +241,66 @@ int FaceModule::search(const image_buffer_t* img, FaceResult& result) {
 }
 
 // ================================================================
+// FaceModule::search_bgr — BGR 直传搜索（跳过 YUYV→BGR RGA 转换）
+// ----------------------------------------------------------------
+// 用于 ESP32 RTSP/本地视频流识别：OpenCV 解码得到 BGR Mat 后直接调用此接口。
+// ================================================================
+int FaceModule::search_bgr(const uint8_t* bgr_data, int width, int height, FaceResult& result)
+{
+    if (!inited_ || !bgr_data || width <= 0 || height <= 0) {
+        result.valid = false;
+        return -1;
+    }
+
+    // ★ 加锁：与 search/extract_dedup 互斥，InspireFace Session 非线程安全
+    std::lock_guard<std::mutex> lk(mutex_);
+    auto session = *(std::shared_ptr<inspire::Session>*)session_;
+
+    // 直接用 BGR 数据创建 FrameProcess（无需 RGA 转换）
+    auto image_process = inspirecv::FrameProcess::Create(
+        bgr_data,
+        height, width,
+        inspirecv::BGR,
+        inspirecv::ROTATION_0
+    );
+
+    // 人脸检测
+    std::vector<inspire::FaceTrackWrap> faces;
+    session->FaceDetectAndTrack(image_process, faces);
+
+    if (faces.empty()) {
+        result.valid = false;
+        return 0;
+    }
+
+    // 取第一个人脸
+    auto& face = faces[0];
+    auto rect = session->GetFaceBoundingBox(face);
+    result.x = rect.GetX();
+    result.y = rect.GetY();
+    result.w = rect.GetWidth();
+    result.h = rect.GetHeight();
+
+    // 提取特征 + 搜索
+    inspire::FaceEmbedding feature;
+    session->FaceFeatureExtract(image_process, face, feature);
+
+    inspire::FaceSearchResult search_result;
+    INSPIREFACE_FEATURE_HUB->SearchFaceFeature(
+        feature.embedding,
+        search_result,
+        false
+    );
+
+    result.id = search_result.id;
+    result.similarity = search_result.similarity;
+    result.valid = (result.id != INSPIRE_INVALID_ID
+                    && result.similarity > FACE_RECOGNITION_THRESHOLD);
+
+    return 0;
+}
+
+// ================================================================
 // FaceModule::extract_dedup — 人脸录入去重
 // 功能：提取特征 → 先搜索是否已存在 → 已存在返回已有ID
 //       不存在则插入新特征，返回新ID
@@ -250,6 +313,9 @@ int FaceModule::search(const image_buffer_t* img, FaceResult& result) {
 int FaceModule::extract_dedup(const image_buffer_t* img, int& feature_id, bool& is_duplicate) {
     if (!inited_ || !img || !img->virt_addr) return -1;
     is_duplicate = false;
+
+    // ★ 加锁：防止 main_event_handler 的 search 并发访问 Session/RGA
+    std::lock_guard<std::mutex> lk(mutex_);
 
     auto session = *(std::shared_ptr<inspire::Session>*)session_;
 

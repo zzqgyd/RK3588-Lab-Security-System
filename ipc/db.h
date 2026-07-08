@@ -87,6 +87,74 @@ int db_query_person_name(void* db, int feature_id, char* out_name, int max_len);
  */
 int db_query_person_name_ex(void* db, int feature_id, char* out_name, int max_len, int* out_room_id);
 
+/* ================================================================
+ * 智能插座配置表（device_plugs）
+ * ================================================================ */
+
+#define DB_MAX_PLUG_NAME  64
+#define DB_MAX_PLUG_IP    64
+#define DB_MAX_PLUG_TOKEN 33
+
+typedef struct {
+    int  id;
+    int  room_id;
+    int  device_id;
+    char name[DB_MAX_PLUG_NAME];
+    char ip[DB_MAX_PLUG_IP];
+    char token[DB_MAX_PLUG_TOKEN];
+    int  enabled;
+} DevicePlugRow;
+
+/* 插入或更新插座配置（按 room_id+device_id 唯一）*/
+int db_insert_device_plug(void* db, int room_id, int device_id,
+                          const char* name, const char* ip, const char* token, int enabled);
+
+/* 删除插座配置（按 room_id + device_id）*/
+int db_delete_device_plug(void* db, int room_id, int device_id);
+
+/* 查询指定房间的所有插座配置，返回记录数（>=0），失败返回 -1 */
+int db_query_plugs_by_room(void* db, int room_id,
+                           DevicePlugRow* out, int max_count);
+
+/* 查询指定房间+设备号的插座配置，0=查到，-1=未查到 */
+int db_query_plug(void* db, int room_id, int device_id, DevicePlugRow* out);
+
+/* ================================================================
+ * ESP32 设备表（room_esp32）
+ * ----------------------------------------------------------------
+ * 每个房间绑定一个 ESP32（room_id 唯一），用于被动人脸识别推流
+ * ================================================================ */
+
+#define DB_MAX_ESP32_NAME    64
+#define DB_MAX_ESP32_IP      64
+#define DB_MAX_ESP32_RTSP    128
+
+typedef struct {
+    int  id;
+    int  room_id;                    /* 房间号（唯一，一间一个 ESP32） */
+    char name[DB_MAX_ESP32_NAME];    /* 备注名 */
+    char esp32_ip[DB_MAX_ESP32_IP];  /* ESP32 IP（用于 RTSP 拉流） */
+    char rtsp_url[DB_MAX_ESP32_RTSP];/* RTSP 流地址 */
+    int  online;                     /* 0=离线, 1=在线（心跳维护） */
+    int64_t last_seen;               /* 最后心跳时间戳（秒） */
+} RoomEsp32Row;
+
+/* 插入或更新 ESP32 配置（按 room_id 唯一）*/
+int db_insert_room_esp32(void* db, int room_id,
+                         const char* name, const char* esp32_ip, const char* rtsp_url);
+
+/* 删除 ESP32 配置（按 room_id）*/
+int db_delete_room_esp32(void* db, int room_id);
+
+/* 查询指定房间的 ESP32 配置，0=查到，-1=未查到 */
+int db_query_esp32_by_room(void* db, int room_id, RoomEsp32Row* out);
+
+/* 查询所有 ESP32 配置，返回记录数（>=0），失败返回 -1 */
+int db_query_all_esp32(void* db, RoomEsp32Row* out, int max_count);
+
+/* 更新 ESP32 在线状态 + 最后心跳时间 */
+int db_update_esp32_online(void* db, int room_id, int online, int64_t last_seen);
+
 #ifdef __cplusplus
 }
 #endif

@@ -3,6 +3,7 @@
 
 #include <string>
 #include <cstdint>
+#include <mutex>
 #include "common.h"
 
 /**
@@ -60,6 +61,19 @@ public:
      */
     int search(const image_buffer_t* img, FaceResult& result);
 
+    /**
+     * @brief 搜索人脸（BGR 直传版本，跳过 YUYV→BGR 的 RGA 转换）
+     * @param bgr_data BGR 连续内存（width*height*3 字节）
+     * @param width    图像宽
+     * @param height   图像高
+     * @param result   [OUT] 搜索结果
+     * @return 0成功，-1失败
+     *
+     * 用于 ESP32 RTSP/本地视频流识别：OpenCV cv::VideoCapture 解码得到 BGR Mat，
+     * 直接喂给 InspireFace，无需经 RGA 转换。
+     */
+    int search_bgr(const uint8_t* bgr_data, int width, int height, FaceResult& result);
+
     /*
     * 录入人脸（去重版本）：先搜索再决定是否插入
     * @param feature_id [OUT] SDK 分配/已有的特征 ID
@@ -76,6 +90,9 @@ public:
 private:
     void* session_;   // 隐藏 InspireFace 实现细节
     bool inited_;     // 初始化标志
+    // ★ 互斥锁：search/extract_dedup 可能被两个线程并发调用
+    //   (main_event_handler + qt_command_handler)，InspireFace Session 非线程安全
+    std::mutex mutex_;
 };
 
 #endif
