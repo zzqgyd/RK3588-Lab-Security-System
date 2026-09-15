@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2027届秋招作战手册 · 嵌入式Linux音视频方向</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700;900&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#16324a; --ink-deep:#0d2338; --amber:#e8a13a;
+  --paper:#fff; --line:#d8dee6; --gray:#5a6672;
+  --mono:'JetBrains Mono','Noto Sans SC',monospace;
+  --sans:'Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;
+  --serif:'Noto Serif SC','Songti SC','SimSun',serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--sans);background:#e9ecef;color:#2b3a47;font-size:14px;line-height:1.7}
+.wrap{max-width:1020px;margin:26px auto 60px;background:var(--paper);box-shadow:0 4px 24px rgba(13,35,56,.15)}
+.hero{background:var(--ink-deep);color:#dbe6f0;padding:42px 52px 36px;position:relative;overflow:hidden}
+.hero::after{content:'2027';position:absolute;right:-10px;bottom:-46px;font-family:var(--serif);font-size:170px;font-weight:900;color:rgba(232,161,58,.07);letter-spacing:.05em}
+.hero h1{font-family:var(--serif);font-size:33px;font-weight:900;color:#fff;letter-spacing:.12em}
+.hero h1 em{font-style:normal;color:var(--amber)}
+.hero .sub{margin-top:8px;color:#9fb3c8;font-size:13.5px}
+.hero .chips{margin-top:14px;display:flex;flex-wrap:wrap;gap:8px}
+.hero .chips span{font-family:var(--mono);font-size:11px;color:var(--amber);border:1px solid rgba(232,161,58,.5);padding:2px 10px;border-radius:20px}
+nav{position:sticky;top:0;z-index:50;background:var(--ink);display:flex;gap:6px;padding:0 52px;box-shadow:0 2px 8px rgba(13,35,56,.25)}
+nav a{color:#c7d5e2;text-decoration:none;font-size:13px;padding:11px 16px;font-weight:500;border-bottom:2px solid transparent}
+nav a:hover{color:var(--amber);border-color:var(--amber)}
+main section{padding:38px 52px;border-top:1px solid var(--line)}
+section:first-of-type{border-top:none}
+.sec-head{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.sec-head .idx{font-family:var(--mono);font-size:11px;color:var(--amber);border:1px solid var(--amber);padding:0 5px;line-height:1.6}
+.sec-head h2{font-family:var(--serif);font-size:24px;font-weight:900;color:var(--ink-deep);letter-spacing:.08em}
+.sec-head::after{content:'';flex:1;height:1px;background:var(--line)}
+.sec-desc{color:var(--gray);font-size:12.5px;margin-bottom:18px}
+h3.cat{font-size:15.5px;color:var(--ink-deep);margin:26px 0 12px;padding-left:10px;border-left:4px solid var(--amber)}
+h3.cat small{font-weight:400;color:var(--gray);font-size:12px;margin-left:8px}
+.qa{border:1px solid var(--line);border-left:3px solid var(--amber);border-radius:3px;padding:11px 16px;margin-bottom:10px;page-break-inside:avoid}
+.qa .q{font-weight:700;color:var(--ink-deep);font-size:13.5px;line-height:1.5}
+.qa .src{font-family:var(--mono);font-size:10px;color:#8a6a2f;background:#fdf3ea;border:1px solid #f0dcbc;padding:0 6px;border-radius:2px;margin-left:8px;white-space:nowrap;font-weight:400}
+.qa .a{margin-top:6px;font-size:13px}
+.qa .a b{color:var(--ink-deep)}
+.k{font-family:var(--mono);font-size:11.5px;background:#eef4f9;color:#0e5a8a;padding:0 4px;border-radius:2px}
+pre.code{background:var(--ink-deep);color:#dbe6f0;font-family:var(--mono);font-size:12px;line-height:1.6;padding:13px 16px;border-radius:4px;overflow-x:auto;margin:8px 0}
+pre.code .cm{color:#7d95ad}
+table{width:100%;border-collapse:collapse;margin:10px 0 16px;font-size:12.5px}
+th{background:var(--ink);color:#fff;font-weight:500;padding:7px 10px;text-align:left;font-size:12px;letter-spacing:.04em}
+td{border-bottom:1px solid var(--line);padding:7px 10px;vertical-align:top}
+tr:nth-child(even) td{background:#f7f9fb}
+td b{color:var(--ink-deep)}
+.note{font-size:11.5px;color:var(--gray);margin:-8px 0 14px}
+.hik{border:1px solid var(--line);border-radius:4px;overflow:hidden;margin-bottom:20px}
+.hik-bar{background:var(--ink);color:#fff;padding:10px 18px;display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px}
+.hik-bar b{font-size:15px}
+.hik-bar span{font-family:var(--mono);font-size:11px;color:var(--amber)}
+.hik-body{padding:14px 18px}
+.jd li,.steps li{margin:4px 0 4px 18px;font-size:13px}
+.arch{border:1px dashed #b9c6d2;border-radius:4px;padding:16px;margin:12px 0;background:#fafcfd}
+.arch-row{display:flex;gap:8px;align-items:stretch;flex-wrap:wrap}
+.node{flex:1;min-width:170px;border:1px solid var(--line);border-radius:3px;padding:8px 10px;background:#fff;text-align:center}
+.node .node-t{font-weight:700;color:var(--ink-deep);font-size:13px;margin-bottom:6px;padding-bottom:4px;border-bottom:2px solid var(--amber)}
+.node .chips{display:flex;flex-wrap:wrap;gap:5px;justify-content:center}
+.node .chips span{font-family:var(--mono);font-size:10.5px;background:#eef2f6;padding:1px 7px;border-radius:10px;color:#44586b}
+.flow{align-self:center;font-size:20px;color:var(--amber);font-weight:700}
+.arch-frame,.arch-bus{margin-top:10px;font-family:var(--mono);font-size:11.5px;padding:6px 12px;border-radius:3px;text-align:center}
+.arch-frame{background:#eef4f9;color:#0e5a8a}
+.arch-bus{background:#fdf3ea;color:#8a6a2f}
+.ms{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin:12px 0}
+.ms .m{border:1px solid var(--line);border-top:3px solid var(--ink);border-radius:3px;padding:10px 12px;background:#fff}
+.ms .m b{color:var(--amber);font-family:var(--mono);font-size:11px}
+.ms .m h4{font-size:13px;color:var(--ink-deep);margin:2px 0}
+.ms .m p{font-size:12px;color:#44586b}
+.callout{background:#fdf3ea;border-left:3px solid var(--amber);padding:10px 16px;border-radius:3px;font-size:13px;margin:12px 0}
+.callout b{color:#8a5a1a}
+.warn{background:#fdeeee;border-left:3px solid #c0504d;padding:10px 16px;border-radius:3px;font-size:13px;margin:12px 0}
+.warn b{color:#8a2a28}
+.rb{background:#f4f7fa;border:1px solid var(--line);border-radius:4px;padding:12px 16px;margin:10px 0}
+.rb ul{margin-left:18px}
+.rb li{margin:3px 0;font-size:13px}
+.rb li b{color:var(--ink-deep)}
+footer{background:var(--ink-deep);color:#8fa5ba;padding:22px 52px;font-size:11.5px;line-height:2}
+footer a{color:#c7d5e2}
+@media print{
+  body{background:#fff}
+  .wrap{margin:0;box-shadow:none;max-width:none}
+  nav{display:none}
+  section{padding:20px 28px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="hero">
+  <h1>秋招作战手册 <em>/</em> 嵌入式 Linux 音视频</h1>
+  <div class="sub">双非本科 · 电子信息工程 · 2027 届 · 目标岗位：嵌入式 Linux 应用开发（音视频 / 图像处理）</div>
+  <div class="chips">
+    <span>主投：海康威视 软件开发（嵌入式-应用）</span>
+    <span>项目①：RK3588 多路智能安防系统</span>
+    <span>项目②：EdgePipe 多源视频分析框架</span>
+    <span>竞赛：嵌入式赛区二等 / 蓝桥杯省二 / 工创赛省三</span>
+  </div>
+</div>
+
+<nav>
+  <a href="#p1">一 · 岗位与公司</a>
+  <a href="#p2">二 · 真实面经与答案</a>
+  <a href="#p3">三 · 项目写法与第二项目</a>
+</nav>
+
+<main>
+
+<!-- ═══════════ 第一部分 岗位与公司 ═══════════ -->
+<section id="p1">
+  <div class="sec-head"><span class="idx">PART 1</span><h2>可投岗位 · 公司 · 地点 · 技术要求</h2></div>
+  <div class="sec-desc">信息来源：海康威视 2027 校招官方公告（高校就业网转载）与官方校招 JD；其他公司为 2027 届已启动校招或同赛道典型画像，投递前以官网最新 JD 为准。</div>
+
+  <div class="hik">
+    <div class="hik-bar">
+      <b>主目标：海康威视 · 软件开发（嵌入式-应用）</b>
+      <span>campushr.hikvision.com · 选「2027校园招聘」</span>
+    </div>
+    <div class="hik-body">
+      <p style="font-size:13px"><b>工作地点（研发）</b>：杭州、武汉、西安、上海、石家庄、成都 ｜ <b>招聘对象</b>：2026.1 – 2027.12 毕业生（2027 届✅） ｜ <b>批次</b>：公告 2026-09 发布、10-25 过期，岗位分批上线，<b>早投早面</b></p>
+      <ul class="jd">
+        <li><b>官方 JD 要求（真实）</b>：① 本科及以上，计算机/软件工程/电子信息/自动化优先，能读英文技术文档；② 熟练 C/C++，常用数据结构，编程风格良好；③ 了解至少一款嵌入式芯片，熟悉 Linux 或 RTOS、多线程编程、TCP/IP；④ <b>了解视音频基础、视音频编解码、网络协议、智能分析原理者优先</b>；⑤ 沟通与解决问题能力、团队合作</li>
+      </ul>
+      <table>
+        <tr><th style="width:38%">官方 JD 条目</th><th>你的弹药（面试/简历对应）</th></tr>
+        <tr><td>C/C++ 熟练 + 数据结构</td><td>两个项目均 C/C++ 开发；蓝桥杯/嵌入式竞赛算法基础</td></tr>
+        <tr><td>熟悉 Linux、多线程编程</td><td>无锁队列（SPSC/MPMC）、线程池、检测状态机、epoll</td></tr>
+        <tr><td>熟悉 TCP/IP</td><td>RTSP/RTP 流媒体、Unix Socket IPC、HTTP</td></tr>
+        <tr><td><b>视音频编解码（加分项，拉开差距的关键）</b></td><td>GStreamer 8 路硬解、MPP/h264_rkmpp 硬编、RTSP 推流、RTP 打包——正是岗位业务本体（往届面经确认：该岗工作"偏应用层、编解码、嵌入式"）</td></tr>
+        <tr><td>英文技术文档</td><td>CET-6（500），习惯读 RFC / 芯片手册 / SDK 文档</td></tr>
+      </table>
+      <p style="font-size:13px"><b>投递流程（官方）</b>：网申 → 测评 → 笔试（部分技术岗）→ 面试（2–3 轮：技术面 → 主管/综合面 → HR 面）→ offer</p>
+      <ul class="steps">
+        <li><b>志愿规则</b>：最多 2 个志愿，每志愿可选 2 个意向部门；<b>多地点 = 多志愿</b>（投杭州+武汉算 2 个）。建议：志愿① = 嵌入式-应用（杭州）；志愿② = 嵌入式-应用（武汉/西安）或 应用软件开发（C++）</li>
+        <li><b>测评</b>：<b>每年仅 1 次机会，不完成无法进入下一环节</b>。内容：言语理解 + 资料分析 + 图形推理（约 30 题，<b>每题单独限时 60–90 秒</b>）+ 性格测评（不计分）。仅支持电脑端，收到通知后尽快完成（窗口期约 2 天）</li>
+        <li><b>笔试</b>：技术岗有专业笔试——C 语言、数据结构、操作系统、计算机网络、编程题</li>
+        <li>PC 端投递（微信端"微简历"也需登录 PC 官网补全）；进度在「个人中心-我的投递」查询</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3 class="cat">可投公司全景<small>按业务匹配度分梯队，简历几乎零改动通用</small></h3>
+  <table>
+    <tr><th>公司</th><th>匹配岗位</th><th>地点</th><th>技术栈要求（典型）</th><th>备注</th></tr>
+    <tr><td><b>海康威视</b></td><td>软件开发（嵌入式-应用）</td><td>杭州/武汉/西安/上海/石家庄/成都</td><td>C/C++、Linux、多线程、TCP/IP；视音频编解码优先（官方 JD）</td><td>主投，见上卡</td></tr>
+    <tr><td><b>大华股份</b></td><td>嵌入式软件 / 编解码算法</td><td>杭州（全国 31 省）</td><td>C/C++、Linux、网络编程、音视频基础</td><td>27 届提前批 2026-08 已启动；全球安防第二，业务与海康同构</td></tr>
+    <tr><td><b>宇视科技</b></td><td>研发 · 嵌入式软件</td><td>杭州</td><td>C/C++、Linux、AIoT</td><td>2027 届校招已开（talent.uniview.com）</td></tr>
+    <tr><td><b>萤石网络</b></td><td>嵌入式软件（智能摄像机）</td><td>杭州</td><td>C/C++、Linux、音视频</td><td>海康控股子公司、业务同源；投前向 HR 确认与海康志愿是否互斥</td></tr>
+    <tr><td><b>瑞芯微</b></td><td>嵌入式软件（AIoT/多媒体 SDK）</td><td>福州/深圳/上海等</td><td>C/C++、Linux、RK 平台</td><td>你的 RK3588 全家桶经验（MPP/RGA/RKNN）是直接敲门砖</td></tr>
+    <tr><td><b>晶晨</b></td><td>嵌入式软件（多媒体 SoC）</td><td>上海/深圳等</td><td>C/C++、Linux、音视频</td><td>机顶盒/智能硬件主控芯片</td></tr>
+    <tr><td><b>全志</b></td><td>嵌入式软件</td><td>珠海/深圳等</td><td>C/C++、Linux</td><td>消费电子 SoC</td></tr>
+    <tr><td><b>地平线</b></td><td>嵌入式软件（BSP/中间件）</td><td>北京/上海/深圳/杭州</td><td>C/C++、Linux、SoC</td><td>智驾芯片</td></tr>
+    <tr><td><b>TP-Link</b></td><td>嵌入式软件开发</td><td>深圳</td><td>C/C++、Linux、网络</td><td>有 IPC 摄像头产品线，对口</td></tr>
+    <tr><td><b>影石 Insta360</b></td><td>嵌入式音视频</td><td>深圳</td><td>C/C++、Linux、图像视频</td><td>全景相机</td></tr>
+    <tr><td><b>安克 Anker</b></td><td>嵌入式软件</td><td>深圳/长沙</td><td>C/C++、Linux</td><td>消费电子出海</td></tr>
+    <tr><td><b>涂鸦智能</b></td><td>嵌入式软件</td><td>杭州/深圳</td><td>C/C++、Linux、IoT</td><td>IoT 平台</td></tr>
+    <tr><td><b>虹软 ArcSoft</b></td><td>视觉应用 / 嵌入式部署</td><td>杭州/上海/深圳</td><td>C/C++、图像处理</td><td>视觉算法 SDK 落地</td></tr>
+    <tr><td><b>当虹科技</b></td><td>视频编码开发</td><td>杭州</td><td>C/C++、编解码</td><td>广电/监控编解码</td></tr>
+    <tr><td><b>经纬恒润</b></td><td>嵌入式软件</td><td>北京/天津/上海等</td><td>C/C++、Linux/RTOS</td><td>汽车电子，研发体量大，保底</td></tr>
+    <tr><td><b>德赛西威</b></td><td>嵌入式软件</td><td>惠州/深圳等</td><td>C/C++、Linux</td><td>智驾/座舱</td></tr>
+  </table>
+  <p class="note">地点为研发主要城市；"典型要求"为该类岗位通行画像，具体以各公司官网 JD 为准。</p>
+
+  <div class="callout"><b>投递节奏</b>：9 月主投海康 + 大华 + 宇视（同赛道简历通用，先拿安防面试练手）→ 10 月芯片平台与智能硬件批次 → 11 月查漏补缺。海康测评每年仅 1 次，行测限时节奏提前用题库练 2–3 套。</div>
+</section>
+
+<!-- ═══════════ 第二部分 面经与答案 ═══════════ -->
+<section id="p2">
+  <div class="sec-head"><span class="idx">PART 2</span><h2>真实面经题库 · 参考答案</h2></div>
+  <div class="sec-desc">题目全部来自海康嵌入式岗公开真实面经（牛客·已意向面经 / 27 届一二面面经 / CSDN 汇总 / 牛客·大厂面经7，来源标注于每题），已按你的方向（嵌入式 Linux 应用 + 音视频）筛选；答案为参考答案，项目类问题用你的项目作答。往届共识：<b>项目深挖 15 分钟/个、顺着回答追问到底、用细节验证是否真做过</b>。</div>
+
+  <h3 class="cat">2.1 项目深挖<small>生死关，一面二面都绕不开</small></h3>
+
+  <div class="qa">
+    <div class="q">「介绍一下你认为最复杂的项目」<span class="src">牛客·大厂面经7 / 已意向面经</span></div>
+    <div class="a"><b>答题结构（先总后分，3 分钟内）</b>：一句话定位（场景 + 规模 + 结果）→ 画架构图（四进程 + 8 条 IPC 通道）→ 点明我负责的模块（视频链路 / IPC / Qt 显示）→ 主数据流（8 路 RTSP → 硬解 → NPU 推理 → 录像/显示）→ 收尾抛一个量化数字。留钩子引导面试官往你准备最充分的模块追问。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「项目里最有技术含量的部分？为什么不是简单调库？」<span class="src">27届面经</span></div>
+    <div class="a">不选业务功能，选<b>性能工程点：零拷贝链路</b>。GStreamer / RKNN / FFmpeg 各自给的是能力，但让 DMA-BUF fd 在三者之间全程不落回用户态拷贝，是自研的胶水工程：<span class="k">gst_dmabuf_memory_get_fd</span> 提取 fd → <span class="k">SCM_RIGHTS</span> 跨进程传递 → <span class="k">DRM_PRIME</span> 喂给编码器——任一环节断链就退化为 memcpy。这正是"调库"与"工程"的区别。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「技术选型做过什么关键取舍？」<span class="src">牛客·大厂面经7</span></div>
+    <div class="a">两例：① 解码用 GStreamer、编码用 FFmpeg——GStreamer 对 Rockchip 插件生态完整（mppvideodec 直接输出 DMA-BUF），适合搭多路管线；FFmpeg 对编码参数（GOP / 码率 / Profile）与 MP4 封装控制更细。② IPC 选 Unix Socket 而非共享内存——传的是 fd 不是像素，性能等价，工程复杂度更低（详见 2.2）。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「如果重做，会改进哪些地方？」<span class="src">牛客·大厂面经7 / 27届面经</span></div>
+    <div class="a">真实答案（忌空谈"加强学习"）：① <b>事件解耦</b>——检测状态机与业务响应当前耦合，重做会引入事件总线（这正是我第二个项目 EdgePipe 的出发点，顺势带出项目②）；② <b>性能埋点</b>——早期没埋延迟/丢帧计数点，后期量化困难；③ <b>进程监督</b>——加看门狗 / systemd 自动拉起与崩溃恢复。</div>
+  </div>
+
+  <h3 class="cat">2.2 Linux 系统编程</h3>
+
+  <div class="qa">
+    <div class="q">「Linux 进程间通信方式有哪些？项目里用了哪种？为什么？」<span class="src">已意向面经·一面</span></div>
+    <div class="a">全量：管道 / FIFO、消息队列、共享内存（+信号量）、信号、mmap、socket（含 Unix 域）、eventfd。<br><b>项目答</b>：Unix 域 Socket。① 需要传 DMA-BUF fd，只有 SCM_RIGHTS 能在进程间传 fd；② socket 自带消息边界与同步语义，比裸共享内存自管锁简单可靠；③ 传的是 fd（4 字节）不是帧数据（MB 级），性能与共享内存等价。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「select / poll / epoll 的区别？epoll 两种模式？」<span class="src">已意向面经·一面</span></div>
+    <div class="a"><b>select</b>：fd_set 位图，默认上限 1024，每次调用全量拷贝进内核，就绪后 O(n) 遍历。<b>poll</b>：pollfd 数组突破 1024 限制，仍全量拷贝 + O(n)。<b>epoll</b>：内核红黑树管理 fd（epoll_ctl 一次注册）、就绪事件挂就绪链表，epoll_wait 只返回就绪 fd，O(1)，海量连接下优势显著。<br><b>LT 水平触发</b>：缓冲区有数据就持续通知，编程简单；<b>ET 边缘触发</b>：状态变化仅通知一次，必须配非阻塞 fd + 循环读到 EAGAIN，否则残留数据不再通知。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「进程和线程的区别？项目里怎么选？」<span class="src">CSDN 汇总</span></div>
+    <div class="a">进程独立地址空间、隔离性好、创建/切换/IPC 代价高；线程共享地址空间、切换快、需处理同步竞争。<b>项目答</b>：跨功能域（检测核心 / UI / 人脸）用进程——故障隔离，UI 崩溃不拖垮检测；进程内部并发（解码 / 推理 / 录像）用线程 + 队列——共享数据结构方便。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「互斥量和信号量的区别？」<span class="src">27届面经</span></div>
+    <div class="a"><b>互斥量</b>：所有权语义，谁上锁谁解锁，可实现优先级继承，用于保护临界区。<b>信号量</b>：计数器，P/V 可由不同任务操作，用于资源计数与任务/中断间同步。二值信号量表象似互斥量，但无所有权、无优先级继承。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「为什么要分用户空间和内核空间？」<span class="src">27届面经</span></div>
+    <div class="a">保护与隔离：内核拥有全部硬件权限，用户程序出错不能直接破坏内核与其他进程；靠 CPU 特权级 + 页表隔离。交互必须经系统调用陷入内核，有切换开销——所以高性能设计（零拷贝、缓冲池、mmap）都在减少拷贝与切换次数。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「C 程序运行时的内存分区？」<span class="src">27届面经</span></div>
+    <div class="a"><span class="k">.text</span> 代码段（只读）、<span class="k">.data</span> 已初始化全局/静态、<span class="k">.bss</span> 未初始化全局/静态（不占文件体积）、堆（malloc 向上增长，手动管理易泄漏）、栈（局部变量与调用帧向下增长，默认约 8MB）、mmap 映射区（动态库 / 大块分配）。</div>
+  </div>
+
+  <h3 class="cat">2.3 C / C++ 基础</h3>
+
+  <div class="qa">
+    <div class="q">「volatile 的作用？局限性？」<span class="src">CSDN 汇总 / 27届面经</span></div>
+    <div class="a">禁止编译器把变量缓存进寄存器或重排访问，每次从内存读取。三个场景：MMIO 寄存器、中断与主循环共享变量、多线程共享标志位。<b>局限</b>：不保证原子性、不是内存屏障——需要原子性用 <span class="k">std::atomic</span> 或锁。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「static 的作用？」<span class="src">CSDN 汇总</span></div>
+    <div class="a">修饰<b>局部变量</b>：存储期从栈改为静态区，生命周期贯穿整个程序，函数多次调用间保值。修饰<b>全局变量 / 函数</b>：内部链接，仅本文件可见，避免符号冲突。C++ 修饰<b>类成员</b>：类级共享，所有对象一份。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「const 的用法？const + volatile 组合见过吗？」<span class="src">27届面经</span></div>
+    <div class="a"><span class="k">const int* p</span>（指向常量，*p 只读）vs <span class="k">int* const p</span>（指针本身只读）vs <span class="k">const int* const p</span>（都只读）；const 成员函数承诺不修改状态。<b>const volatile 组合</b>：只读状态寄存器——软件不能写（const），但硬件会随时改（volatile），嵌入式真实存在。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「C 语言字节对齐的规则？为什么要对齐？」<span class="src">27届面经</span></div>
+    <div class="a"><b>规则</b>：成员偏移为其对齐数（通常 = 自身大小）的整数倍；结构体总大小为最大对齐数的整数倍；<span class="k">#pragma pack(n)</span> / <span class="k">__attribute__((packed))</span> 可压缩。<b>原因</b>：CPU 按字长访问内存，未对齐会拆成多次总线访问，ARM 上非对齐访问甚至直接 fault；DMA、NEON 严格要求对齐。项目场景：网络协议头、硬件 buffer 用 packed 后要防未对齐访问。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「extern "C" 的作用？」<span class="src">27届面经</span></div>
+    <div class="a">C++ 为支持重载做了名字修饰（name mangling），<span class="k">extern "C"</span> 让编译器按 C 规则生成符号。C++ 工程调用 C 库（FFmpeg / GStreamer / SQLite 全是 C 库）时，头文件必须包裹，否则链接 undefined reference：
+<pre class="code">#ifdef __cplusplus
+extern "C" {
+#endif
+<span class="cm">/* C 头文件内容 */</span>
+#ifdef __cplusplus
+}
+#endif</pre></div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「delete 和 delete[] 的区别？malloc/free 和 new/delete 呢？」<span class="src">27届面经</span></div>
+    <div class="a"><span class="k">new[]</span> 必须配 <span class="k">delete[]</span>——逐元素析构；对非平凡析构类型用 delete 只析构首元素（未定义行为）。<b>malloc vs new</b>：malloc 只分配内存、返回 NULL；new = 分配 + 构造 + 失败抛 bad_alloc，类型安全、大小自动推导、可重载（placement new）。</div>
+  </div>
+
+  <h3 class="cat">2.4 网络编程</h3>
+
+  <div class="qa">
+    <div class="q">「TCP 和 UDP 的区别？为什么监控场景媒体流用 UDP？」<span class="src">CSDN 汇总</span></div>
+    <div class="a"><b>TCP</b>：面向连接、可靠有序、流量 + 拥塞控制、字节流，头部 20B+。<b>UDP</b>：无连接、尽力交付、保留报文边界、开销小延迟低。<b>监控场景答</b>：RTSP 信令走 TCP 保证可靠；媒体流 RTP 默认走 UDP——实时性优先，丢一帧的代价小于重传引入的延迟堆积；穿防火墙场景降级为 TCP interleaved（RTP 打包进 RTSP 的 TCP 连接）。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「三次握手的过程？为什么是三次？」<span class="src">高频</span></div>
+    <div class="a">C→SYN(seq=x)；S→SYN+ACK(seq=y, ack=x+1)；C→ACK(ack=y+1)。三次使双方各自确认"我能发你能收、你能发我能收"；两次无法防止网络中滞留的历史重复 SYN 建立无效连接。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「讲一下 TCP 拥塞控制」<span class="src">CSDN 汇总·海康原题</span></div>
+    <div class="a">四个算法：<b>慢启动</b>（cwnd 从小值指数增长到 ssthresh）→ <b>拥塞避免</b>（每 RTT 线性 +1）→ <b>快重传</b>（3 个重复 ACK 立即重传，不等超时）→ <b>快恢复</b>（ssthresh = cwnd/2，cwnd = ssthresh 后线性增长）。本质是 AIMD——加性增、乘性减，保证公平与收敛。</div>
+  </div>
+
+  <h3 class="cat">2.5 音视频专项<small>海康业务特色，你的主场</small></h3>
+
+  <div class="qa">
+    <div class="q">「视频编解码了解吗？H.264 和 H.265 的区别？」<span class="src">已意向面经·二面原题</span></div>
+    <div class="a">同画质下 H.265 比 H.264 节省约 30–50% 码率。技术差异：宏块固定 16×16 → <b>CTU 最大 64×64 四叉树自适应划分</b>；帧内预测 9 种 → 35 种；新增 SAO 环路滤波；帧间预测与运动补偿更精细。代价：编码复杂度高数倍、专利费用高、老硬件解码不支持。<b>安防现状</b>：H.264 是兼容性基本盘，H.265 在带宽/存储敏感场景普及，海康有 H.265+ 私有码控增强。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「I 帧、P 帧、B 帧和 GOP？」<span class="src">项目必考</span></div>
+    <div class="a"><b>I 帧</b>帧内编码，不依赖其他帧，是随机访问与错误恢复的锚点；<b>P 帧</b>参考前向帧做运动补偿预测；<b>B 帧</b>双向参考，压缩率最高，但编解码需等后向参考帧——引入延迟，实时监控常关闭或受限。<b>GOP</b> = 两个 I 帧的间隔：越长压缩率越高，但随机定位粒度粗、丢包后必须等下一个 I 帧才能恢复。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「SPS 和 PPS 是什么？」<span class="src">项目②核心考点</span></div>
+    <div class="a"><b>SPS 序列参数集</b>：分辨率、Profile/Level、参考帧数等序列级信息；<b>PPS 图像参数集</b>：熵编码方式、slice 分组等。解码器初始化必需，缺失则关键帧也解不出来。RTP 传输时随 SDP 以 sprop-parameter-sets 带出，或每个关键帧前重发。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「RTSP 交互流程？RTP 怎么打包 H.264？」<span class="src">岗位对口必考</span></div>
+    <div class="a"><b>RTSP</b>：OPTIONS（探能力）→ DESCRIBE（获 SDP：编码/分辨率/SPS PPS）→ SETUP（定传输：UDP 端口对或 TCP interleaved 通道）→ PLAY → RTP 流媒体 → TEARDOWN。<br><b>RTP 打包 H.264（RFC 6184）</b>：NALU ≤ MTU 单包直发；超限用 <b>FU-A 分片</b>——1 字节 FU indicator（NAL 头）+ 1 字节 FU header（S/E 起止位）+ 分片数据；序列号每包 +1，时间戳按 90kHz 时钟。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「你项目里零拷贝是怎么落地的？」<span class="src">项目对口</span></div>
+    <div class="a">三段：① <b>解码输出</b>：mppvideodec 输出 DMA-BUF，<span class="k">gst_dmabuf_memory_get_fd</span> 取 fd；② <b>跨进程</b>：sendmsg + SCM_RIGHTS 把 fd 发给 Qt 进程，OpenGL 以 fd 建 EGLImage 直接采样；③ <b>录像</b>：fd 作为 <span class="k">AV_PIX_FMT_DRM_PRIME</span> 输入 h264_rkmpp 编码。任一环节断链即退化为用户态 memcpy——这是全项目含金量最高的部分。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「码率控制模式了解吗？」<span class="src">加分项</span></div>
+    <div class="a"><b>CBR</b> 恒定：码率稳定可预算，画质波动；<b>VBR</b> 可变：画质稳定，码率随场景波动；<b>ABR</b> 平均：折中。监控常用 CBR/ABR + GOP 对齐（I 帧占码率大头）；智能编码思路：静态场景降帧率/降码率（海康 H.265+ 同思路）。</div>
+  </div>
+
+  <h3 class="cat">2.6 调试与性能</h3>
+
+  <div class="qa">
+    <div class="q">「段错误怎么定位？」<span class="src">27届面经</span></div>
+    <div class="a"><span class="k">ulimit -c unlimited</span> 开 core dump；<span class="k">gdb ./app core</span> → bt 看调用栈、frame 切帧、info locals 看变量；编译加 -g -O0；或 gdb 里直接 run 复现。更高效：编译加 <span class="k">-fsanitize=address</span>。无 core 的现场用 dmesg 查内核日志 + addr2line 翻译崩溃地址。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「内存泄漏怎么排查？」<span class="src">27届面经·二面</span></div>
+    <div class="a">工具：ASan（插桩，最准）、valgrind（慢但全面）。方法：长跑监控 <span class="k">/proc/self/status</span> 的 RSS 是否持续增长；代码层 review new/delete 配对、RAII 封装、智能指针；退出时跑一次 valgrind 报告定位。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「偶发 bug 怎么复现和定位？」<span class="src">27届面经·二面</span></div>
+    <div class="a">方法论：① <b>收敛条件</b>——记录发生时完整上下文（日志/队列深度/时间点），找共性；② <b>加速复现</b>——压力测试 + 并发 + 长跑 + 随机延迟注入；③ <b>假设-验证</b>——二分代码版本、加断言缩小范围；④ 修复后加回归。讲一个项目真实案例（如偶发花屏 → 定位 buffer 生命周期 → 引用计数修复）最有说服力。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「系统性能优化做过什么？」<span class="src">已意向面经·二面原题</span></div>
+    <div class="a">你的实答（按项目）：① <b>零拷贝</b>——1080p NV12 一帧约 3MB，全程 fd 传递消除多次 memcpy；② <b>NPU 三核绑定</b>负载均衡；③ <b>无锁队列</b>降低锁竞争；④ <b>Frame 对象池</b>避免高频分配释放；⑤ <b>RGA 硬件</b>做缩放/格式转换替代 CPU。每条都能展开"优化前 → 优化后"对比。</div>
+  </div>
+
+  <h3 class="cat">2.7 手撕代码<small>现场白板/共享屏幕</small></h3>
+
+  <div class="qa">
+    <div class="q">「手写 strcpy + 追问为什么会崩溃」<span class="src">CSDN 汇总·海康原题</span></div>
+    <div class="a">
+<pre class="code">char *my_strcpy(char *dst, const char *src) {
+    char *ret = dst;              <span class="cm">/* 保存首地址用于返回 */</span>
+    assert(dst != NULL && src != NULL);
+    while ((*dst++ = *src++) != '\0')
+        ;
+    return ret;
+}</pre>
+<b>追问要点</b>：① 源目标重叠 → 未定义行为，重叠场景用 memmove 语义；② dst 空间不足 → 越界写，安全场景用 strncpy/strlcpy 并显式置 '\0'；③ src 无 '\0' → 死循环读越界；④ 返回值支持链式表达式；⑤ 先保存 ret 是因为 dst 在循环中移动。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「手写字符串翻转」<span class="src">已意向面经·一面原题</span></div>
+    <div class="a">
+<pre class="code">void reverse_str(char *s) {
+    size_t n = strlen(s);
+    for (size_t i = 0, j = n - 1; i &lt; j; i++, j--) {
+        char t = s[i]; s[i] = s[j]; s[j] = t;
+    }
+}</pre>
+<b>变体准备</b>：句子单词顺序翻转（两次翻转法：整体翻转 + 逐词翻转）；原地翻转不申请额外空间。</div>
+  </div>
+
+  <h3 class="cat">2.8 HR / 综合面</h3>
+
+  <div class="qa">
+    <div class="q">「自我介绍」<span class="src">所有面经第一步</span></div>
+    <div class="a">90 秒模板：基本信息（学校/专业/方向一句带过）→ 技术主线（嵌入式 Linux + 音视频，两个项目各一句话定位）→ 与岗位的连接点（"做过 GStreamer 多路硬解、NPU 推理、RTSP 推流，正是贵司嵌入式-应用岗 JD 里的视音频方向"）→ 竞赛佐证动手能力。结尾留钩子："项目细节我可以展开讲"。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「为什么选择海康？」<span class="src">CSDN·HR 面原题</span></div>
+    <div class="a"><b>业务契合</b>：我的两个项目就是嵌入式 + 音视频 + AI 落地的安防场景，海康是这个方向全球头部平台（连续 10 年全球安防 50 强第一）；<b>地点与培养</b>：研发总部在杭州、岗位量大，校招培养体系完整。忌答"大厂光环 / 钱多"。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「能接受杭州吗？怎么看待加班？」<span class="src">多份面经</span></div>
+    <div class="a">如实表态杭州可接受（结合家庭距离）；对加班：接受研发岗阶段性冲刺，但更认同用工程手段（自动化、流程优化）提高效率。别硬刚，也别无底线跪舔。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「期望薪资？」<span class="src">CSDN·HR 面原题</span></div>
+    <div class="a">不主动报死数："参考贵司同级校招体系，希望在同学历同岗位区间的中位以上；比起起薪我更看重平台匹配和成长，也了解贵司有完善的调薪机制。"被逼问数字 → 给区间并说明依据（同届市场水平），留谈判空间。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「手里有其他 offer 吗？还在面哪些公司？」<span class="src">CSDN·HR 面原题</span></div>
+    <div class="a">如实但排序："在看安防与芯片平台的同类岗位（大华 / 宇视 / 瑞芯微），海康是第一优先级，业务最契合。"没 offer 别慌——说流程中即可，<b>别造假，圈子小易穿帮</b>。</div>
+  </div>
+
+  <h3 class="cat">2.9 偶考速览<small>BSP / MCU 向——嵌入式-应用岗出现率低，各背一句话</small></h3>
+  <div class="qa">
+    <div class="q">「驱动 / RTOS 方向偶考题一览」<span class="src">27届面经 / 已意向面经</span></div>
+    <div class="a">
+      <b>字符 vs 块设备</b>：字节流顺序访问（串口/LED）vs 按块随机 + 缓存（存储）；驱动核心是 <span class="k">file_operations</span>（open/read/write/ioctl/poll/mmap）。<br>
+      <b>I2C</b>：两线开漏 + 上拉，7 位地址（写时左移 1 位补 R/W 位——经典坑），支持时钟延展。<b>SPI</b>：四线全双工，CPOL/CPHA 四种模式，无应答机制，速率高于 I2C。<br>
+      <b>中断上下文</b>：硬中断中不可睡眠/阻塞（无进程上下文），耗时工作放工作队列 / tasklet。<br>
+      <b>DMA</b>：外设与内存直接传输不占 CPU；视频解码器输出即 DMA-BUF。<br>
+      <b>jffs2 vs yaffs2</b>：均为 Flash 日志结构文件系统，自带磨损均衡；jffs2 偏 NOR、挂载慢，yaffs2 专为 NAND。<br>
+      <b>优先级反转</b>：低优先级持锁、高优先级等待、被中优先级间接阻塞 → 优先级继承 / 优先级天花板解决。<br>
+      <b>看门狗</b>：监控任务检测各线程心跳，全部健康才喂狗，防"卡死仍在喂狗"的假活。<br>
+      <span style="color:var(--gray)">说明：这些题集中在 BSP/驱动岗面经；嵌入式-应用岗主战场是 2.1–2.8。</span></div>
+  </div>
+</section>
+
+<!-- ═══════════ 第三部分 项目写法 ═══════════ -->
+<section id="p3">
+  <div class="sec-head"><span class="idx">PART 3</span><h2>项目写法 · 深挖预案 · 第二项目方案</h2></div>
+  <div class="sec-desc">与 resume.html 内容完全同步，可直接使用。原则：简历上每一行都是面试官的提问邀请——只写你能讲 3 层深度的内容。</div>
+
+  <div class="warn"><b>职责边界（先明确）</b>：你不负责<b>设备管理进程、miio 协议、MQTT</b>——简历与面试一律不写、不 claim。被问到"系统里插座怎么控制"→ 答："设备管理进程是团队同学负责，我负责对接它的 IPC 接口设计，细节我可以讲我这一侧。"诚实划清边界反而加分（往届面经：面试官会刻意验证分工真实性）。</div>
+
+  <h3 class="cat">3.1 项目①：基于 RK3588 的多路智能安防监控系统<small>团队项目 · 你负责视频链路与 IPC 核心</small></h3>
+
+  <div class="rb">
+    <p style="font-size:12px;color:var(--gray);margin-bottom:6px">技术栈：C/C++ · GStreamer · RKNN · FFmpeg · Qt · Unix Socket · SQLite</p>
+    <ul>
+      <li><b>架构与 IPC</b>：四进程分布式架构（主检测 / Qt 双屏 UI / 人脸识别 / 设备管理），设计 8 条 Unix Socket 通道互联，帧数据经 <b>SCM_RIGHTS 传递 DMA-BUF fd</b> 跨进程零拷贝</li>
+      <li><b>多路视频链路（主检测进程）</b>：GStreamer <b>mppvideodec</b> 硬解 8 路 RTSP 流 → YOLOv5 <b>NPU 三核并行推理</b>（按 worker 绑核）→ FFmpeg <b>h264_rkmpp</b> 硬编智能录像，解码-推理-显示-录像全链路零 memcpy</li>
+      <li><b>并发设计</b>：SPSC RingBuffer + MPMC 无锁队列调度多路帧；Frame 对象池避免频繁分配；检测状态机（人在 / 离开 / 停留 / 免打扰）驱动自动启停录像，防抖动与重复触发</li>
+      <li><b>人脸识别进程</b>：V4L2 采集 USB 摄像头（YUYV）+ RTSP 拉流双通道，InspireFace NPU 推理完成签到 / 设备使用登记</li>
+      <li><b>数据与显示</b>：SQLite WAL 模式 6 张业务表多进程安全读写；HDMI 大屏 8 路 OpenGL NV12 纹理渲染（2×4 网格 / 单路全屏）+ DSI 触摸屏 12 功能窗口</li>
+    </ul>
+  </div>
+
+  <div class="callout"><b>投递前必须实测填入的量化数据</b>：8 路 1080p@25fps 下——解码 + 推理总延迟（ms）、CPU 占用（%）、NPU 占用、录像启停响应（s）。做法：解码后与推理后各打一个时间戳，统计 1000 帧均值；top 采样。没有数字的"高性能"在面试官眼里等于零。</div>
+
+  <h3 class="cat">3.1.1 项目①深挖预案<small>按真实面经"追问到底"的深度准备</small></h3>
+
+  <div class="qa">
+    <div class="q">「为什么拆四个进程而不是单进程多线程？」</div>
+    <div class="a">① <b>故障隔离</b>：UI 崩溃不拖垮检测核心；② <b>负载分离</b>：渲染重 IO、推理重计算，独立调优互不干扰；③ <b>协作边界</b>：团队并行开发。代价是 IPC 开销——用零拷贝把代价压到最低（顺势引出 SCM_RIGHTS）。反问准备："为什么不用容器/微服务？"——嵌入式单机场景，本地 socket + 进程监督足够，引入容器是过度设计。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「DMA-BUF 和 SCM_RIGHTS 的原理？」</div>
+    <div class="a"><b>DMA-BUF</b>：内核中跨驱动共享缓冲区的标准机制，用户态以 fd 为句柄，VPU / GPU / NPU 都能直接以它作输入输出。<b>SCM_RIGHTS</b>：Unix 域 socket 的辅助消息，sendmsg 时把 fd 放进 cmsg，内核在接收进程安装一个指向同一 <span class="k">struct file</span> 的新 fd。生命周期由 fd 引用计数管理。坑：跨进程后原 fd 仍有效，需约定所有权（谁负责 close）。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「NPU 三核并行怎么做的？」</div>
+    <div class="a">每个推理 worker 持有独立 rknn context，初始化时按 worker_id 指定 NPU core（0/1/2），帧经 MPMC 队列被空闲 worker 领取，三核同时处理不同帧，吞吐约 3×。追问"多线程共用一个 context 行不行"——run 内部有状态，并发会被串行化反而退化。<span style="color:var(--gray)">（按你的实际实现核对表述细节）</span></div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「无锁队列怎么实现？」</div>
+    <div class="a"><b>SPSC ring</b>：预分配数组 + head/tail 两个原子索引，生产者只写 head、消费者只写 tail——单写方原则天然无竞争；release/acquire 内存序保证"数据发布先于索引可见"。容量取 2 的幂（取模换位与加速）。MPMC 用于 worker 池分发。<b>诚实策略</b>：实现若有简化（自旋 + CAS），直说并给出改进方案——比被追问穿帮好得多。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「智能录像为什么用状态机，不逐帧判断？」</div>
+    <div class="a">逐帧判断会抖动：人一晃就反复开关录像。状态机把<b>时间维度</b>纳入决策——空闲 → 进入 ROI → 停留计时超阈值 → 触发录像 → 离开 → 延时停止 → 免打扰期抑制。防抖、防重复触发、天然支持免打扰。这是"业务规则显式建模"的例子，可迁移到任何事件型系统。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「解码用 GStreamer、编码用 FFmpeg，为什么不统一？」</div>
+    <div class="a">解码侧 GStreamer 对 Rockchip 插件生态完整（mppvideodec 直接输出 DMA-BUF），多路管线与调度现成；编码侧 FFmpeg 对 GOP / 码率 / Profile 和 MP4 封装控制更细，h264_rkmpp 接受 DRM_PRIME fd 正好接零拷贝。混用不冲突——各取所长，中间以 fd 为"通用货币"。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「8 路并发怎么不丢帧？延迟怎么控制？」</div>
+    <div class="a">分路独立解码线程 + 帧池；解码与推理经队列解耦削峰；显示端"丢旧帧"策略（渲染跟不上时取最新帧，监控场景可接受跳帧不可接受滞后）。【投递前用实测数据回答此题】</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「这个项目你遇到的最难的 bug？」<span class="src">27届面经·验证真伪专用</span></div>
+    <div class="a">准备一个真实故事，结构 = 现象 → 排查过程（工具 + 假设）→ 根因 → 修复 → 教训。推荐素材：跨进程 fd 生命周期导致的偶发花屏/崩溃、GStreamer appsink 拿不到 DMA-BUF 的问题、多进程 SQLite 写冲突。细节（日志、参数、耗时）越具体越可信。</div>
+  </div>
+
+  <h3 class="cat">3.2 项目②：EdgePipe · 多源视频分析流水线框架<small>把你正在做的多协议框架 + 已有的 V4L2/MPP/RTSP 经验合成一个项目</small></h3>
+
+  <p style="font-size:13px;margin-bottom:6px"><b>定位一句话</b>：多协议输入 → 多算法处理 → 多协议输出，事件触发多响应的<b>可插拔流水线框架</b>。你之前的 V4L2 采集 + MPP 编码 + RTSP 推流经验直接作为框架内第一条已打通链路——不是从零开始，是升级重用。</p>
+
+  <div class="arch">
+    <div class="arch-row">
+      <div class="node">
+        <div class="node-t">输入插件</div>
+        <div class="chips"><span>V4L2</span><span>RTSP 拉流</span><span>MP4 文件</span><span>图片目录</span></div>
+      </div>
+      <div class="flow">→</div>
+      <div class="node">
+        <div class="node-t">处理链插件</div>
+        <div class="chips"><span>RGA 预处理</span><span>NPU 推理</span><span>OSD 叠加</span><span>自定义…</span></div>
+      </div>
+      <div class="flow">→</div>
+      <div class="node">
+        <div class="node-t">输出插件</div>
+        <div class="chips"><span>RTSP 推流</span><span>MP4 录像</span><span>JPEG 截图</span><span>HTTP 回调</span></div>
+      </div>
+    </div>
+    <div class="arch-frame">统一帧总线：NV12 + DMA-BUF fd（引用计数）—— 输入到输出全链路零拷贝</div>
+    <div class="arch-bus">事件总线：算法事件（有人 / 越界 / 人脸）→ 规则引擎 → 响应动作（启停录像 / 截图 / 推流 / 通知）</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「五个设计讲点（面试主动展开，每个都能被追问 2 层）」</div>
+    <div class="a">
+      <b>① 插件化 + 工厂注册</b>：InputSource / Processor / Sink 三个抽象基类，自注册工厂（静态对象构造时登记），新增协议/算法不改编排代码——开闭原则的落地。<br>
+      <b>② 管道-过滤器模式</b>：每级处理单元独立线程 + 有界队列，慢算法不拖垮采集；背压与丢帧策略可配置。<br>
+      <b>③ 零拷贝贯穿</b>：帧对象持有 DMA-BUF fd + 引用计数，RGA / NPU / 编码器直接消费 fd（承接项目①经验）。<br>
+      <b>④ 事件驱动</b>：观察者模式事件总线，把"检测"与"响应"解耦——来自项目①检测状态机的抽象。<br>
+      <b>⑤ 配置驱动拓扑</b>：JSON/INI 声明"输入→处理链→输出"，改配置不改代码，支持热重载。</div>
+  </div>
+
+  <div class="ms">
+    <div class="m"><b>阶段 1</b><h4>打通单链路</h4><p>迁移旧代码：V4L2 MMAP 采集 → RGA 缩放/格式转换 → MPP H.264 编码 → RTSP 推流。产出：可运行 demo + 延迟/吞吐基线数据</p></div>
+    <div class="m"><b>阶段 2</b><h4>框架化</h4><p>抽象三类插件接口 + 工厂注册 + 配置驱动拓扑；新增 RTSP 拉流输入、MP4 录像输出。产出：改配置文件即可换拓扑</p></div>
+    <div class="m"><b>阶段 3</b><h4>智能与事件</h4><p>接入 RKNN YOLO 插件；事件总线 + 规则引擎，事件触发录像/截图。产出：检测-响应闭环</p></div>
+    <div class="m"><b>阶段 4</b><h4>量化收尾</h4><p>延迟/吞吐/CPU/内存压测，README + 架构图。产出：简历上的数字</p></div>
+  </div>
+  <p class="note">投海康前至少完成阶段 1–2（可演示、可讲设计）；阶段 3 完成核心闭环即可，量化数据必须真实。</p>
+
+  <div class="rb">
+    <p style="font-size:12px;color:var(--gray);margin-bottom:6px">项目②简历写法（与 resume.html 同步） · 技术栈：C++ · V4L2 · MPP · RGA · RKNN · RTSP/RTP · epoll</p>
+    <ul>
+      <li><b>插件化架构</b>：输入（V4L2 / RTSP / 文件）、算法（RGA 预处理 / NPU 推理 / OSD）、输出（RTSP 推流 / MP4 录像 / JPEG 截图）三类插件统一接口 + 自注册工厂，<b>配置文件声明处理拓扑</b>，新增协议与算法零侵入框架代码</li>
+      <li><b>零拷贝帧抽象</b>：统一帧对象持有 NV12 + <b>DMA-BUF fd 引用计数</b>，采集 → 算法 → 编码全程免 memcpy</li>
+      <li><b>已打通链路</b>：V4L2 MMAP 采集 → RGA 硬件缩放 / 格式转换 → MPP H.264 硬件编码 → RTSP 推流</li>
+      <li><b>事件驱动（开发中）</b>：算法检测事件经事件总线 + 规则引擎触发录像 / 截图 / 通知等响应动作</li>
+    </ul>
+  </div>
+
+  <div class="qa">
+    <div class="q">「项目还在框架阶段，面试怎么讲？」</div>
+    <div class="a">校招框架项目，面试官考察的是<b>设计判断力而非完成度</b>。讲法：① 为什么需要这个框架——项目①的痛点（多源输入、检测与响应耦合、复用难）；② 每个设计点的<b>权衡</b>（为什么插件化 / 为什么零拷贝 / 为什么事件总线）；③ 已验证部分给证据（链路跑通 + 性能数字）；④ 未完成部分给计划（阶段 3–4）。<b>切忌吹完成度</b>——诚实 + 有思考 &gt; 假完整。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「两个项目怎么组合叙事？」</div>
+    <div class="a">一句话："项目①我<b>纵向做穿</b>了一个完整安防系统——解码、推理、录像、显示全链路零拷贝；做的过程中发现多源输入、算法扩展、事件响应这些能力是通用的，于是有了项目②的<b>横向抽象</b>——把可复用性做成框架。"纵向深度 + 横向抽象，双非背景用项目硬度补学历，这是你最锋利的武器。</div>
+  </div>
+
+  <div class="qa">
+    <div class="q">「反问环节问什么？」<span class="src">每轮面试结尾</span></div>
+    <div class="a">技术面：① "这个岗位入职后前半年大概做什么模块？是偏编解码、传输还是智能分析？" ② "团队用什么硬件平台，代码库规模大概多大？"（体现岗位关心）。<b>别问</b>：薪资、加班、百度可查的公司常识。</div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <b style="color:#fff">资料来源</b>（投递与练习以官方最新信息为准）：<br>
+  · 海康校招官网 campushr.hikvision.com ｜ <a href="https://jy.xmu.edu.cn/campus/view/id/1002194">海康2027校招公告（厦门大学就业网转载）</a> ｜ <a href="https://m.yingjiesheng.com/job-008-047-898.html">嵌入式-应用岗官方JD（应届生求职网）</a><br>
+  · 面经：<a href="https://www.nowcoder.com/feed/main/detail/44e0024adf0942bbb1863d5c981442af">牛客·海康嵌入式一面二面（已意向）</a> ｜ <a href="https://weitoutiao.zjurl.cn/rogue/topic_share/?concern_id=1654807632471099">27届嵌入式软件开发一二面（浙江头条）</a> ｜ <a href="https://blog.csdn.net/JansonXIE/article/details/132462095">CSDN·海康嵌入式面经汇总</a><br>
+  · 同赛道：<a href="https://m.nowcoder.com/discuss/918924791384375296">大华27届提前批（牛客）</a> ｜ <a href="https://talent.uniview.com/index.html">宇视2027校招官网</a><br>
+  手册生成于 2026-09 · 配套文件：resume.html（简历）
+</footer>
+
+</div>
+</body>
+</html>

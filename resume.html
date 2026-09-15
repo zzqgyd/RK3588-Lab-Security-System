@@ -211,7 +211,7 @@ body{
         </div>
         <div class="skill">
           <div class="cat">网络编程</div>
-          <p>TCP / UDP socket；应用层协议 <i>RTSP / RTP</i>、MQTT、HTTP</p>
+          <p>TCP / UDP socket；应用层协议 <i>RTSP / RTP</i>、HTTP</p>
         </div>
         <div class="skill">
           <div class="cat">音视频</div>
@@ -262,34 +262,34 @@ body{
       <!-- 项目一 -->
       <div class="proj">
         <div class="tit">
-          <b>基于 RK3588 的多路智能安防人员管理系统</b>
-          <span>【2025.xx – 2026.xx】· 个人项目</span>
+          <b>基于 RK3588 的多路智能安防监控系统</b>
+          <span>【2025.xx – 2026.xx】· 团队项目 · 负责视频链路与 IPC</span>
         </div>
-        <div class="stack"><b>技术栈</b>：C/C++ · GStreamer · RKNN · FFmpeg · Qt · Unix Socket · MQTT · SQLite</div>
+        <div class="stack"><b>技术栈</b>：C/C++ · GStreamer · RKNN · FFmpeg · Qt · Unix Socket · SQLite</div>
         <ul>
-          <li><b>架构</b>：设计四进程分布式架构（主检测 / Qt 双屏 UI / 人脸识别 / 设备管理），8 条 Unix Socket 通道互联，帧数据经 <span class="hl">SCM_RIGHTS 传递 DMA-BUF fd</span> 跨进程零拷贝</li>
-          <li><b>视频链路</b>：GStreamer <span class="hl">mppvideodec</span> 硬解 8 路 RTSP 流 → YOLOv5 <span class="hl">NPU 三核并行推理</span>（按 worker 绑核）→ FFmpeg <span class="hl">h264_rkmpp</span> 硬编智能录像，解码-推理-显示-录像全链路零 memcpy</li>
-          <li><b>并发设计</b>：SPSC RingBuffer + MPMC 无锁队列调度多路帧；Frame 对象池避免频繁分配；状态机管理人员在 / 离开 / 停留 / 免打扰与自动录像触发</li>
-          <li><b>人脸与物联网</b>：InspireFace NPU 人脸识别（USB 采集 + ESP32 RTSP 拉流双通道）；<b>自实现米家 miio 协议</b>（UDP + AES-128-CBC + MD5 + JSON-RPC，不依赖官方 SDK）控制智能插座并实现过载 / 过温保护</li>
-          <li><b>数据与交互</b>：SQLite WAL 模式 6 张业务表多进程安全读写；Qt 双屏异显（HDMI 八路监控 OpenGL 渲染 + DSI 触摸屏 12 功能入口）</li>
+          <li><b>架构与 IPC</b>：四进程分布式架构（主检测 / Qt 双屏 UI / 人脸识别 / 设备管理），设计 8 条 Unix Socket 通道互联，帧数据经 <span class="hl">SCM_RIGHTS 传递 DMA-BUF fd</span> 跨进程零拷贝</li>
+          <li><b>多路视频链路（主检测进程）</b>：GStreamer <span class="hl">mppvideodec</span> 硬解 8 路 RTSP 流 → YOLOv5 <span class="hl">NPU 三核并行推理</span>（按 worker 绑核）→ FFmpeg <span class="hl">h264_rkmpp</span> 硬编智能录像，解码-推理-显示-录像全链路零 memcpy</li>
+          <li><b>并发设计</b>：SPSC RingBuffer + MPMC 无锁队列调度多路帧；Frame 对象池避免频繁分配；检测状态机（人在 / 离开 / 停留 / 免打扰）驱动自动启停录像，防抖动与重复触发</li>
+          <li><b>人脸识别进程</b>：V4L2 采集 USB 摄像头（YUYV）+ RTSP 拉流双通道，InspireFace NPU 推理完成签到 / 设备使用登记</li>
+          <li><b>数据与显示</b>：SQLite WAL 模式 6 张业务表多进程安全读写；HDMI 大屏 8 路 OpenGL NV12 纹理渲染（2×4 网格 / 单路全屏）+ DSI 触摸屏 12 功能窗口</li>
         </ul>
-        <div class="todo">【待实测填写】8 路 1080p@25fps 下：解码+推理总延迟 ___ ms、CPU 占用 ___%、端到端录像延迟 ___ s</div>
+        <div class="todo">【待实测填写】8 路 1080p@25fps 下：解码+推理总延迟 ___ ms、CPU 占用 ___%、录像启停响应 ___ s</div>
       </div>
 
       <!-- 项目二 -->
       <div class="proj">
         <div class="tit">
-          <b>轻量级 RTSP 流媒体服务器与低延迟播放器</b>
+          <b>EdgePipe · 多源视频分析流水线框架</b>
           <span>【2026.09 – 至今】· 个人项目</span>
         </div>
-        <div class="stack"><b>技术栈</b>：C · FFmpeg · x264 · V4L2 · SDL2 · epoll</div>
+        <div class="stack"><b>技术栈</b>：C++ · V4L2 · MPP · RGA · RKNN · RTSP/RTP · epoll</div>
         <ul>
-          <li><b>采集编码</b>：V4L2 MMAP 方式采集 USB 摄像头（YUYV），libswscale 转 NV12 后 x264 编码，配置 GOP / Profile / 码率控制，SPS/PPS 随 SDP 下发</li>
-          <li><b>流媒体服务</b>：自实现 RTSP 信令（OPTIONS / DESCRIBE / SETUP / PLAY / TEARDOWN）与 <span class="hl">RTP 打包（H.264 FU-A 分片）</span>，序列号 / 时间戳维护；支持 UDP 与 <span class="hl">TCP interleaved</span> 双传输模式</li>
-          <li><b>分发模型</b>：发布-订阅架构，单路编码流多客户端分发，epoll 单线程事件驱动管理所有连接</li>
-          <li><b>播放端</b>：SDL2 播放器，FFmpeg 解码 + YUV 纹理渲染，<span class="hl">基于 PTS 的音视频同步</span>与延迟丢帧策略</li>
+          <li><b>插件化架构</b>：输入（V4L2 / RTSP / 文件）、算法（RGA 预处理 / NPU 推理 / OSD）、输出（RTSP 推流 / MP4 录像 / JPEG 截图）三类插件统一接口 + 自注册工厂，<span class="hl">配置文件声明处理拓扑</span>，新增协议与算法零侵入框架代码</li>
+          <li><b>零拷贝帧抽象</b>：统一帧对象持有 NV12 + <span class="hl">DMA-BUF fd 引用计数</span>，采集 → 算法 → 编码全程免 memcpy</li>
+          <li><b>已打通链路</b>：V4L2 MMAP 采集 → RGA 硬件缩放 / 格式转换 → MPP H.264 硬件编码 → RTSP 推流</li>
+          <li><b>事件驱动（开发中）</b>：算法检测事件经事件总线 + 规则引擎触发录像 / 截图 / 通知等响应动作</li>
         </ul>
-        <div class="todo">【待实测填写】端到端延迟 ___ ms（UDP/TCP 对比）、单服务器并发客户端数 ___</div>
+        <div class="todo">【待实测填写】1080p 端到端延迟 ___ ms、单路处理吞吐 ___ fps</div>
       </div>
     </div>
 
