@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>简历 - 嵌入式Linux软件开发（音视频方向）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700;900&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#16324a;          /* 藏青主色 */
+  --ink-deep:#0d2338;
+  --amber:#e8a13a;        /* 琥珀强调 */
+  --paper:#ffffff;
+  --line:#d8dee6;
+  --gray:#5a6672;
+  --tag-bg:#eef2f6;
+  --mono:'JetBrains Mono','Noto Sans SC',monospace;
+  --sans:'Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;
+  --serif:'Noto Serif SC','Songti SC','SimSun',serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+body{
+  font-family:var(--sans);
+  background:#e9ecef;
+  color:var(--ink);
+  font-size:13px;
+  line-height:1.62;
+}
+/* ── 工具栏（打印时隐藏） ── */
+.toolbar{
+  position:sticky;top:0;z-index:99;
+  background:var(--ink-deep);color:#fff;
+  display:flex;align-items:center;gap:16px;
+  padding:10px 24px;font-size:13px;
+}
+.toolbar b{font-family:var(--mono);color:var(--amber);letter-spacing:.05em}
+.toolbar .tip{color:#9fb3c8}
+.toolbar button{
+  margin-left:auto;background:var(--amber);color:#231a08;border:none;
+  padding:6px 18px;font-weight:700;cursor:pointer;font-size:13px;
+  font-family:var(--sans);border-radius:2px;
+}
+.toolbar button:hover{background:#f5b95e}
+/* ── A4 纸张 ── */
+.sheet{
+  width:210mm;min-height:297mm;
+  margin:18px auto 40px;
+  background:var(--paper);
+  box-shadow:0 4px 24px rgba(13,35,56,.18);
+  display:flex;
+  position:relative;
+  overflow:hidden;
+}
+/* ── 左栏 ── */
+.side{
+  width:68mm;background:var(--ink);color:#dbe6f0;
+  padding:12mm 8mm;
+  display:flex;flex-direction:column;gap:14px;
+}
+.photo{
+  width:32mm;height:42mm;margin:0 auto 4px;
+  border:1px dashed rgba(232,161,58,.75);
+  display:flex;align-items:center;justify-content:center;
+  color:rgba(232,161,58,.85);font-size:11px;text-align:center;
+  background:rgba(255,255,255,.03);
+}
+.side h2{
+  font-size:14px;color:#fff;letter-spacing:.18em;
+  border-bottom:1px solid rgba(255,255,255,.22);
+  padding-bottom:5px;margin-bottom:7px;
+  display:flex;align-items:center;gap:6px;
+}
+.side h2::before{content:'';width:5px;height:5px;background:var(--amber);display:inline-block}
+.side .blk{font-size:11.5px;line-height:1.7}
+.side .blk+.blk{margin-top:2px}
+.side .edu-school{font-size:13px;font-weight:700;color:#fff}
+.side .edu-major{color:var(--amber);font-weight:500}
+.side .kv{display:flex;justify-content:space-between;margin-bottom:2px}
+.side .kv b{font-weight:500;color:#b8c9da}
+/* 技能条目 */
+.skill{margin-bottom:7px}
+.skill .cat{color:var(--amber);font-weight:700;font-size:11.5px;margin-bottom:1px}
+.skill p{color:#c7d5e2}
+.skill i{font-style:normal;font-family:var(--mono);font-size:10.5px;color:#8fa5ba}
+/* 奖项 */
+.award{display:flex;gap:6px;margin-bottom:6px}
+.award .dot{color:var(--amber);font-family:var(--mono)}
+.award span{color:#dbe6f0}
+.award em{display:block;font-style:normal;font-size:10.5px;color:#8fa5ba;font-family:var(--mono)}
+/* 评价 */
+.self p{color:#c7d5e2;margin-bottom:6px;padding-left:10px;border-left:2px solid rgba(232,161,58,.6)}
+/* ── 右栏 ── */
+.main{flex:1;padding:11mm 10mm 10mm}
+.header{border-bottom:3px solid var(--ink);padding-bottom:9px;margin-bottom:11px}
+.header h1{
+  font-family:var(--serif);font-size:27px;font-weight:900;
+  letter-spacing:.35em;color:var(--ink-deep);
+}
+.header .intent{
+  display:flex;justify-content:space-between;align-items:baseline;margin-top:4px;
+}
+.header .intent b{
+  color:var(--ink);font-size:13.5px;
+}
+.header .intent b::before{
+  content:'▸';color:var(--amber);margin-right:6px;
+}
+.header .intent span{font-family:var(--mono);font-size:11px;color:var(--gray)}
+.sec{margin-bottom:11px}
+.sec>h2{
+  font-size:15px;font-weight:700;color:var(--ink-deep);
+  display:flex;align-items:center;gap:8px;margin-bottom:7px;
+}
+.sec>h2 .idx{
+  font-family:var(--mono);font-size:10.5px;color:var(--amber);
+  border:1px solid var(--amber);padding:0 4px;line-height:1.5;
+}
+.sec>h2::after{content:'';flex:1;height:1px;background:var(--line)}
+/* 项目 */
+.proj{margin-bottom:11px;page-break-inside:avoid}
+.proj .tit{
+  display:flex;justify-content:space-between;align-items:baseline;
+  margin-bottom:3px;
+}
+.proj .tit b{font-size:14px;color:var(--ink-deep)}
+.proj .tit span{font-family:var(--mono);font-size:10.5px;color:var(--gray);white-space:nowrap}
+.proj .stack{font-family:var(--mono);font-size:10.5px;color:#8a6a2f;margin-bottom:4px}
+.proj .stack b{color:var(--amber);font-weight:600}
+.proj ul{list-style:none}
+.proj li{
+  position:relative;padding-left:13px;margin-bottom:2.5px;
+  color:#2b3a47;
+}
+.proj li::before{content:'▪';position:absolute;left:0;color:var(--amber);font-size:10px;top:1px}
+.proj li b{color:var(--ink-deep)}
+.proj li .hl{
+  font-family:var(--mono);font-size:11px;color:#0e5a8a;background:#eef4f9;
+  padding:0 3px;border-radius:2px;
+}
+.proj .todo{
+  font-size:10.5px;color:#b0552b;background:#fdf3ea;
+  border-left:2px solid var(--amber);padding:2px 8px;margin-top:3px;
+}
+/* 教育右侧主区（若放右栏） */
+.edu-line{display:flex;justify-content:space-between;align-items:baseline}
+/* 页脚 */
+.foot{
+  position:absolute;bottom:6mm;left:78mm;right:10mm;
+  display:flex;justify-content:space-between;
+  font-family:var(--mono);font-size:9px;color:#a8b3bd;
+  border-top:1px solid var(--line);padding-top:4px;
+}
+/* ── 打印 ── */
+@page{size:A4;margin:0}
+@media print{
+  body{background:#fff}
+  .toolbar{display:none}
+  .sheet{margin:0;box-shadow:none;width:210mm;height:297mm}
+}
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <b>RESUME.html</b>
+  <span class="tip">替换所有【】占位内容（姓名/学校/联系方式/项目时间/量化数据）后，Ctrl+P 另存为 PDF 投递</span>
+  <button onclick="window.print()">打印 / 导出 PDF</button>
+</div>
+
+<div class="sheet">
+  <!-- ═══════════ 左栏 ═══════════ -->
+  <aside class="side">
+    <div class="photo">证件照<br>（一寸，可删）</div>
+
+    <div>
+      <h2>基本信息</h2>
+      <div class="blk">
+        <div class="kv"><b>姓名</b><span>张三</span></div>
+        <div class="kv"><b>届别</b><span>2027 届本科</span></div>
+        <div class="kv"><b>电话</b><span>138-xxxx-xxxx</span></div>
+        <div class="kv"><b>邮箱</b><span>xxxx@xx.com</span></div>
+        <div class="kv"><b>GitHub</b><span>github.com/xxx</span></div>
+      </div>
+    </div>
+
+    <div>
+      <h2>教育背景</h2>
+      <div class="blk">
+        <div class="edu-school">【XX大学】</div>
+        <div class="edu-major">电子信息工程 · 本科</div>
+        <div class="kv" style="margin-top:3px"><b>2023.09 – 2027.06</b></div>
+        <p style="margin-top:4px">
+          校奖学金 二等奖 / 三等奖<br>各 1 次 ｜ CET-6（500）<br>
+          主修：嵌入式系统、数字图像<br>处理、通信原理、信号与系统
+        </p>
+      </div>
+    </div>
+
+    <div>
+      <h2>专业技能</h2>
+      <div class="blk">
+        <div class="skill">
+          <div class="cat">编程语言</div>
+          <p>熟练 C/C++，良好编码规范；了解 Python / Shell</p>
+        </div>
+        <div class="skill">
+          <div class="cat">Linux 系统编程</div>
+          <p>多线程（pthread）、<i>epoll</i>、IPC（Unix Socket / 共享内存 / 管道）、GDB、性能分析（top / perf）</p>
+        </div>
+        <div class="skill">
+          <div class="cat">网络编程</div>
+          <p>TCP / UDP socket；应用层协议 <i>RTSP / RTP</i>、MQTT、HTTP</p>
+        </div>
+        <div class="skill">
+          <div class="cat">音视频</div>
+          <p>FFmpeg（编解码 / 封装 / 推拉流）、GStreamer 管线、V4L2 采集、H.264 / H.265、SDL 渲染</p>
+        </div>
+        <div class="skill">
+          <div class="cat">嵌入式平台</div>
+          <p>RK3588 / RKNPU NPU 模型部署（YOLOv5 / InspireFace）、ARM 交叉编译、I2C / SPI / UART</p>
+        </div>
+        <div class="skill">
+          <div class="cat">工具与框架</div>
+          <p>Git、CMake、Makefile、Qt（多线程 / OpenGL）、SQLite</p>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <h2>竞赛获奖</h2>
+      <div class="blk">
+        <div class="award"><span class="dot">01</span><span>嵌入式大赛 · 赛区二等奖<em>【全国大学生嵌入式芯片与系统设计竞赛】</em></span></div>
+        <div class="award"><span class="dot">02</span><span>蓝桥杯嵌入式 · 省级二等奖<em>嵌入式设计与开发大学组</em></span></div>
+        <div class="award"><span class="dot">03</span><span>工创赛 · 省级三等奖<em>【全国大学生工程实践与创新能力大赛】</em></span></div>
+      </div>
+    </div>
+
+    <div>
+      <h2>自我评价</h2>
+      <div class="blk self">
+        <p>具备采集 → 编码 → 传输 → 解码 → 渲染的音视频全链路独立开发经验，两个项目均从零落地为完整可运行系统</p>
+        <p>长期专注嵌入式 Linux 方向，动手能力强，习惯阅读英文一手资料（RFC / 数据手册 / SDK 文档）解决问题</p>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ═══════════ 右栏 ═══════════ -->
+  <main class="main">
+    <div class="header">
+      <h1>张 三</h1>
+      <div class="intent">
+        <b>求职意向：嵌入式 Linux 软件开发（音视频 / 图像处理方向）</b>
+        <span>2027 Campus · Embedded SW</span>
+      </div>
+    </div>
+
+    <div class="sec">
+      <h2><span class="idx">P1</span>项目经历</h2>
+
+      <!-- 项目一 -->
+      <div class="proj">
+        <div class="tit">
+          <b>基于 RK3588 的多路智能安防人员管理系统</b>
+          <span>【2025.xx – 2026.xx】· 个人项目</span>
+        </div>
+        <div class="stack"><b>技术栈</b>：C/C++ · GStreamer · RKNN · FFmpeg · Qt · Unix Socket · MQTT · SQLite</div>
+        <ul>
+          <li><b>架构</b>：设计四进程分布式架构（主检测 / Qt 双屏 UI / 人脸识别 / 设备管理），8 条 Unix Socket 通道互联，帧数据经 <span class="hl">SCM_RIGHTS 传递 DMA-BUF fd</span> 跨进程零拷贝</li>
+          <li><b>视频链路</b>：GStreamer <span class="hl">mppvideodec</span> 硬解 8 路 RTSP 流 → YOLOv5 <span class="hl">NPU 三核并行推理</span>（按 worker 绑核）→ FFmpeg <span class="hl">h264_rkmpp</span> 硬编智能录像，解码-推理-显示-录像全链路零 memcpy</li>
+          <li><b>并发设计</b>：SPSC RingBuffer + MPMC 无锁队列调度多路帧；Frame 对象池避免频繁分配；状态机管理人员在 / 离开 / 停留 / 免打扰与自动录像触发</li>
+          <li><b>人脸与物联网</b>：InspireFace NPU 人脸识别（USB 采集 + ESP32 RTSP 拉流双通道）；<b>自实现米家 miio 协议</b>（UDP + AES-128-CBC + MD5 + JSON-RPC，不依赖官方 SDK）控制智能插座并实现过载 / 过温保护</li>
+          <li><b>数据与交互</b>：SQLite WAL 模式 6 张业务表多进程安全读写；Qt 双屏异显（HDMI 八路监控 OpenGL 渲染 + DSI 触摸屏 12 功能入口）</li>
+        </ul>
+        <div class="todo">【待实测填写】8 路 1080p@25fps 下：解码+推理总延迟 ___ ms、CPU 占用 ___%、端到端录像延迟 ___ s</div>
+      </div>
+
+      <!-- 项目二 -->
+      <div class="proj">
+        <div class="tit">
+          <b>轻量级 RTSP 流媒体服务器与低延迟播放器</b>
+          <span>【2026.09 – 至今】· 个人项目</span>
+        </div>
+        <div class="stack"><b>技术栈</b>：C · FFmpeg · x264 · V4L2 · SDL2 · epoll</div>
+        <ul>
+          <li><b>采集编码</b>：V4L2 MMAP 方式采集 USB 摄像头（YUYV），libswscale 转 NV12 后 x264 编码，配置 GOP / Profile / 码率控制，SPS/PPS 随 SDP 下发</li>
+          <li><b>流媒体服务</b>：自实现 RTSP 信令（OPTIONS / DESCRIBE / SETUP / PLAY / TEARDOWN）与 <span class="hl">RTP 打包（H.264 FU-A 分片）</span>，序列号 / 时间戳维护；支持 UDP 与 <span class="hl">TCP interleaved</span> 双传输模式</li>
+          <li><b>分发模型</b>：发布-订阅架构，单路编码流多客户端分发，epoll 单线程事件驱动管理所有连接</li>
+          <li><b>播放端</b>：SDL2 播放器，FFmpeg 解码 + YUV 纹理渲染，<span class="hl">基于 PTS 的音视频同步</span>与延迟丢帧策略</li>
+        </ul>
+        <div class="todo">【待实测填写】端到端延迟 ___ ms（UDP/TCP 对比）、单服务器并发客户端数 ___</div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <h2><span class="idx">P2</span>经历说明</h2>
+      <ul style="list-style:none">
+        <li style="position:relative;padding-left:13px;color:#2b3a47">
+          <span style="position:absolute;left:0;color:var(--amber)">▪</span>
+          竞赛项目均独立完成嵌入式软件部分：裸机 / RTOS 下外设驱动（I2C / SPI / UART）、LCD 与传感器数据处理，熟悉从原理图、数据手册到驱动的完整开发流程
+        </li>
+        <li style="position:relative;padding-left:13px;color:#2b3a47">
+          <span style="position:absolute;left:0;color:var(--amber)">▪</span>
+          长期维护个人 GitHub，项目均附完整 README、架构图与编译说明
+        </li>
+      </ul>
+    </div>
+
+    <div class="foot">
+      <span>ZHANG SAN · Embedded Linux / Audio-Video</span>
+      <span>更新于 2026.09</span>
+    </div>
+  </main>
+</div>
+
+</body>
+</html>
