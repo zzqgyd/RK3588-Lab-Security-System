@@ -412,9 +412,9 @@ extern "C" {
   <div class="sec-head"><span class="idx">PART 3</span><h2>项目写法 · 深挖预案 · 第二项目方案</h2></div>
   <div class="sec-desc">与 resume.html 内容完全同步，可直接使用。原则：简历上每一行都是面试官的提问邀请——只写你能讲 3 层深度的内容。</div>
 
-  <div class="warn"><b>职责边界（先明确）</b>：你不负责<b>设备管理进程、miio 协议、MQTT</b>——简历与面试一律不写、不 claim。被问到"系统里插座怎么控制"→ 答："设备管理进程是团队同学负责，我负责对接它的 IPC 接口设计，细节我可以讲我这一侧。"诚实划清边界反而加分（往届面经：面试官会刻意验证分工真实性）。</div>
+  <div class="warn"><b>职责边界（先明确）</b>：全项目<b>只有设备管理进程、miio 协议、MQTT 不由你负责</b>——这部分简历与面试一律不写、不 claim。被问到"系统里插座怎么控制"→ 答："设备管理进程是队友负责，我负责对接它的 IPC 接口设计，细节我可以讲我这一侧。"反过来，其余三个进程（主检测 / Qt 双屏 UI / 人脸识别）都是你一个人写的，讲的时候要说得肯定——诚实划清边界反而加分（往届面经：面试官会刻意验证分工真实性）。</div>
 
-  <h3 class="cat">3.1 项目①：基于 RK3588 的多路智能安防监控系统<small>团队项目 · 你负责视频链路与 IPC 核心</small></h3>
+  <h3 class="cat">3.1 项目①：基于 RK3588 的多路智能安防监控系统<small>团队项目 · 你负责除设备管理进程外的全部软件</small></h3>
 
   <div class="rb">
     <p style="font-size:12px;color:var(--gray);margin-bottom:6px">技术栈：C/C++ · GStreamer · RKNN · FFmpeg · Qt · Unix Socket · SQLite</p>
