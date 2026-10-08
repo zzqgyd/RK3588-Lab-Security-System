@@ -165,7 +165,7 @@ footer{background:var(--ink-deep);color:#8fa5ba;padding:20px 46px;font-size:11.5
     <details class="cand"><summary>参考答案（90–150 秒版）</summary><div class="body">
       <p>好的。这是一个部署在 RK3588 开发板上的<b>多路智能安防监控系统</b>：板子接 8 路 RTSP 网络摄像头做解码和 AI 检测，人在画面里停留时自动录像，配合人脸识别做签到和设备使用登记，最后通过 HDMI 大屏 + 触摸双屏做本地展示。</p>
       <p>整个系统按功能拆成<b>四个进程</b>：主检测进程、Qt 双屏 UI 进程、人脸识别进程和设备管理进程，进程之间用 8 条 Unix Socket 通道互联。<b>这四个进程里，除了设备管理进程由队友负责，其余三个都是我一个人写的</b>：主检测进程是 GStreamer 的 mppvideodec 硬解 8 路 1080p，帧数据以 DMA-BUF fd 的形式经 SCM_RIGHTS 跨进程零拷贝传递，YOLOv5 用 NPU 三核并行推理，检测结果过状态机驱动 FFmpeg 硬编智能录像；UI 进程用 Qt 做 HDMI 大屏 + DSI 触摸双屏异显，8 路画面走 OpenGL 渲染；人脸识别进程是 V4L2 采集加 RTSP 拉流双通道跑 InspireFace。进程间的 IPC 框架——8 条通道的消息定义和 fd 传递协议——也是我定的。</p>
-      <p>整条链路从解码、推理到显示、录像<b>全程零 memcpy</b>，8 路同时跑 CPU 占用还能维持在【实测 %】，端到端延迟【实测 ms】。其中我觉得最有含金量的是跨三个生态——GStreamer、RKNN、FFmpeg——打通零拷贝这件事，中间踩过不少坑，如果您感兴趣我可以展开讲。</p>
+      <p>从解码、RGA 预处理、NPU 推理到编码落盘，这条主链路全程零拷贝——帧一路以 DMA-BUF fd 的形式流动，跨进程也只传 fd 不搬数据。8 路同时跑 CPU 占用大约【实测 %】，端到端延迟【实测 ms】。其中我觉得最有含金量的是跨三个生态——GStreamer、RKNN、FFmpeg——把 fd 这条零拷贝链路打通这件事，中间踩过不少坑，如果您感兴趣我可以展开讲。</p>
     </div></details>
     <div class="probe"><b>考察点</b>：表达结构（总-分-钩）、是否真做过（细节密度）、职责边界是否清晰。<b>注意</b>：最后一句就是主动埋钩——「零拷贝 + 跨生态 + 踩坑」三个诱饵，把面试官引向 Q3 系列（你的主场）。</div>
   </div>
@@ -174,8 +174,11 @@ footer{background:var(--ink-deep);color:#8fa5ba;padding:20px 46px;font-size:11.5
     <div class="qmeta"><span class="qno">Q1.2</span><span class="tag deep">追</span></div>
     <div class="iv"><span class="who">面试官</span>等一下，你说「零拷贝」，这个词很多人简历上都写。你先说清楚：什么数据，从哪到哪，不拷贝？</div>
     <details class="cand"><summary>参考答案</summary><div class="body">
-      <p>具体说：一帧 1080p 的 NV12 大约 3MB。解码器输出它之后，要经过「跨进程给 UI 显示」和「送编码器录像」两条路径。传统做法是把像素从解码器缓冲区 memcpy 到共享内存、再 memcpy 进编码器——3MB × 25fps × 8 路，哪怕只拷两次也是每秒 1.2GB 的纯搬运，CPU 直接吃满。</p>
-      <p>我的做法是：mppvideodec 解码输出的 buffer 本身是内核 DMA-BUF，用户态就是一个 fd；跨进程时我用 Unix Socket 的 <span class="k">SCM_RIGHTS</span> 把 fd 传过去，对面拿到的是指向<b>同一块物理内存</b>的新 fd；UI 进程用 fd 建 EGLImage 直接纹理采样，编码侧把 fd 当 <span class="k">AV_PIX_FMT_DRM_PRIME</span> 输入——像素从头到尾没有被复制过一次。</p>
+      <p>具体说：一帧 1080p 的 NV12 大约 3MB。解码器输出它之后，有「跨进程给 UI 显示」「送 RGA+NPU 推理」「送编码器录像」三条消费路径。传统做法每一步都要把像素 memcpy 一次——3MB × 25fps × 8 路，哪怕只拷两次也是每秒 1.2GB 的纯搬运，CPU 直接吃满。</p>
+      <p>我的做法是：mppvideodec 解码输出的 GstBuffer 本身是内核 DMA-BUF，用户态就是一个 fd，从这里分出去——</p>
+      <p><b>跨进程</b>：用 Unix Socket 的 <span class="k">SCM_RIGHTS</span> 把 fd 传过去，接收方 recvmsg 拿到指向<b>同一块物理内存</b>的新 fd，不搬数据；<b>推理</b>：RGA 直接以 fd 为源做缩放 + NV12→RGB，输出直接写进 rknn 预分配的输入内存（也是 fd），NPU 从这块内存读；<b>录像</b>：FFmpeg 侧把 fd 填进 <span class="k">AVDRMFrameDescriptor</span>，以 <span class="k">AV_PIX_FMT_DRM_PRIME</span> 送给 h264_rkmpp 编码器，AVFrame 里挂的就是那块内存。</p>
+      <p><b>显示</b>这一支我要说清楚：UI 进程拿到 fd 后是<b> mmap 到用户态，再把 Y、UV 两个平面 glTexSubImage2D 上传成两张纹理，YUV→RGB 在 fragment shader 里做</b>（Y 用一张 R8 纹理、UV 用一张 RG8 纹理）。所以显示这一支为了用标准 OpenGL 纹理，多了一次<b>GPU 纹理上传</b>，但 CPU 侧没有做任何像素格式转换——转换在 GPU 里。</p>
+      <p>总结一下：解码 → RGA → NPU → 编码这条主链路上，CPU 一次像素拷贝都没有；单独传一个 4 字节 fd 不叫拷贝。</p>
     </div></details>
     <div class="probe"><b>考察点</b>：能否把简历术语落到「字节、路径、次数」。答得出 3MB×25fps×8 这个算式的候选人，面试官会立刻提一档。</div>
   </div>
@@ -201,8 +204,8 @@ footer{background:var(--ink-deep);color:#8fa5ba;padding:20px 46px;font-size:11.5
     <div class="qmeta"><span class="qno">Q2.2</span><span class="tag deep">追</span></div>
     <div class="iv"><span class="who">面试官</span>那你们和做设备管理的队友之间，接口是怎么约定的？如果他的进程挂了，你这边会发生什么？</div>
     <details class="cand"><summary>参考答案</summary><div class="body">
-      <p>接口层面：我们约定了消息格式——每条消息是「类型 + 长度 + JSON/二进制体」的帧，跑在 Unix Socket 上，带超时和心跳；我的检测事件（有人在/离开/触发录像）通过这条通道推给他，他的控制指令（比如免打扰开关）反向推给我。fd 传递走 <span class="k">sendmsg</span> 的 cmsg，和普通消息同一套协议。</p>
-      <p>他挂了会怎样——我当时处理是：<b>我的主链路完全不受影响</b>。检测、录像、显示不依赖设备管理进程，它挂了只是「联动响应」这一块失效，UI 上能看到连接状态。socket 断开时 epoll 会报 EPOLLHUP/ERR，我这边做重连退避，恢复后自动重连。<span style="color:#8a6a2f">【按实际核对：你们的重连策略、是否有 systemd 拉起】</span></p>
+      <p>接口层面：我们没有用文本协议，全部是<b>定长的二进制结构体</b>直接 <span class="k">send</span>——比如设备事件就是 <span class="k">{event, room_id, device_id, duration_minutes}</span> 四个 int，帧元数据是一个 <span class="k">FrameMeta</span> 结构体。主进程 → 设备进程这条通道额外加了 <b>tag 协议</b>：先发 4 字节 tag 再发 payload，把 tag 和 payload 合并在一次 send 里保证原子性；因为要区分「事件」「识别结果」「各自的 ack」多种消息，接收端先 <span class="k">MSG_WAITALL</span> 读满固定 4 字节 tag，再按 tag 读对应长度的 payload，一条一条对齐着收。这里我踩过坑要说一下：我们<b>最早</b>用的是 MSG_PEEK 按「总长度匹配」的方案——peek 一下看积压多少字节、凑够一条再消费；结果多条消息被合并进同一个 socket 缓冲时，peek 返回的长度既不等于 16 也不等于 88，接收端直接死循环。后来<b>彻底废弃</b>成「tag 定长前缀」才稳。fd 传递走 <span class="k">sendmsg</span> 的 cmsg，和结构体数据在同一个 sendmsg 里发出去。</p>
+      <p>他挂了会怎样——我当时的处理是：<b>主链路完全不受影响</b>。检测、录像、显示都不依赖设备管理进程，它挂了只是「联动响应」失效。具体地：主进程用 <span class="k">MSG_DONTWAIT</span> + <span class="k">try_lock</span> 发事件，锁忙或没连上就直接丢弃（REGISTER/RELEASE 都是幂等的，下次事件会补上）；主循环里每次非阻塞 <span class="k">accept</span>，他的进程重启后重新 connect 就能自动接回来，不需要我写重连退避。UI 上能看到连接状态。<span style="color:#8a6a2f">【按实际核对：是否需要 systemd 拉起进程】</span></p>
     </div></details>
     <div class="probe"><b>考察点</b>：故障隔离意识——这正是当初拆多进程的核心收益，能自然接住这题的候选人不多。答完顺势埋钩：「为什么拆进程」留给面试官问（Q2.3）。</div>
   </div>
@@ -222,8 +225,9 @@ footer{background:var(--ink-deep);color:#8fa5ba;padding:20px 46px;font-size:11.5
     <div class="qmeta"><span class="qno">Q2.4</span><span class="tag deep">追</span></div>
     <div class="iv"><span class="who">面试官</span>行，那你 8 条 socket 通道——为什么要 8 条？一条不行吗？</div>
     <details class="cand"><summary>参考答案</summary><div class="body">
-      <p>【按实际核对具体通道数与用途】我们的通道是按「数据类型 + 通信对端」拆的：比如检测事件是一条、帧数据是一条、UI 控制指令是一条、心跳又是一条……拆开的核心原因是<b>优先级隔离</b>——控制指令和心跳是低频高优先级，帧数据是高频大流量，如果挤在一条 socket 上，帧数据突发时指令可能被延迟；拆开后指令通道永远是轻载的。另外每条通道的协议格式独立演化，改一处不影响其他。</p>
-      <p>代价是 fd 数量和连接管理复杂了，但我们有统一的 IPC 框架收口，复杂度可控。如果流量没这么大，一条通道多路复用也够——这是规模和复杂度的权衡。</p>
+      <p>我们的通道是按「数据类型 + 通信对端」拆的，一共 8 条：①主进程→Qt 的监控画面（8 路 NV12 帧 + 检测框 + 设备占用）、②人脸进程→Qt 的 USB 摄像头 YUYV 画面、③Qt→人脸进程的命令（签到/签退/登记/录入/删除）、④主进程↔人脸进程的 ESP32 识别事件与结果、⑤Qt→主进程的 ROI 配置热重载、⑥Qt→主进程的手动断电等命令、⑦Qt↔设备进程的插座/ESP32 查询与管理、⑧主进程↔设备进程的登记/释放事件。</p>
+      <p>拆开的核心原因有两个。<b>第一是解耦但仍用一套模式</b>：每条通道各有一个明确的「服务端」和「客户端」，谁是监听方、谁是连接方写死在代码里，启动顺序（Qt 先起）就不会乱。相反，如果把帧数据和命令挤在一条 socket 上，帧数据这种高频大流量一旦突发，控制命令和心跳就得排队延迟；拆开后命令通道永远是轻载的。<b>第二是协议可以各自演化</b>：帧通道传的是 <span class="k">FrameMeta</span> + fd，设备通道是 tag+结构体，命令通道可能就是一个字节，互不影响。</p>
+      <p>代价是 fd 数量和连接管理复杂了，所以我们把底层操作收口到一套 <span class="k">ipc_socket</span> 封装里（server_create / client_connect / send_frame / recv_frame），上层的协议差异才不至于散落。如果流量和进程都更少，一条通道多路复用也够——这是规模和复杂度的权衡。</p>
     </div></details>
     <div class="probe"><b>考察点</b>：数字背后有没有想清楚。简历上的「8 条」如果答不出为什么是 8，就是扣分项——所以务必提前想好这条的答案。</div>
   </div>
@@ -259,9 +263,9 @@ sendmsg(sock, &msg, 0);</pre>
     <details class="cand"><summary>参考答案</summary><div class="body">
       <p>第一个问题：<b>能用</b>。close 只是把发送方那个 fd 号从描述符表摘掉，struct file 的引用计数减一；但消息还在 socket 队列里时，内核对 cmsg 里的 fd 持有引用，接收方 recvmsg 拿到新 fd 后引用仍然有效。这正是 fd 传递的价值——所有权转移是安全的。</p>
       <p>第二个问题：<b>不会泄漏</b>。消息滞留在 socket 缓冲区时，内核持有对应 file 的引用；接收进程崩溃，进程退出时内核会关掉它整个描述符表、socket 队列被销毁，所有挂着的引用统一释放，引用计数归零后 DMA-BUF 由内核回收。这也是我敢放心用它的原因——异常路径不需要我写任何清理代码。</p>
-      <p>细节上我们约定了<b>所有权协议</b>：fd 发出去之后发送方立即 close，接收方用完负责 close，语义类似「move」；并且 send 时带 <span class="k">MSG_CMSG_CLOEXEC</span>，防止万一进程 fork/exec 把 fd 泄漏给子进程。</p>
+      <p>不过我们的所有权约定和「发送方立刻 close」不一样，这里要说准：<b>发送方不 close</b>。因为主进程里的这个 fd 是从 GstSample 里 <span class="k">gst_dmabuf_memory_get_fd</span> 借出来的，它的生命周期由 GstSample 的引用计数管着，我不能关它——Frame 对象析构时只做 <span class="k">gst_sample_unref</span>，fd 交给 GStreamer 回收。<b>接收方 Qt 侧则把收到的 fd <span class="k">dup</span> 一份自己保存</b>（一帧可能同时用于缓存和渲染），用完 <span class="k">close</span> 的是自己 dup 出来的那份；recvmsg 拿到的那个原始 fd，处理完立即 close。这样两边各管各的引用，谁也不会误关对方在用的 fd。</p>
     </div></details>
-    <div class="probe"><b>考察点</b>：引用计数生命周期——区分「背过 SCM_RIGHTS」和「真用 SCM_RIGHTS 排查过问题」的分水岭。最后 CLOEXEC 细节是强信号。</div>
+    <div class="probe"><b>考察点</b>：引用计数生命周期——区分「背过 SCM_RIGHTS」和「真用 SCM_RIGHTS 排查过问题」的分水岭。<b>加分点</b>：能坚持说清「我们的发送方不 close，fd 是向 GstSample 借的」，而不是背一句通用的「谁发谁 close」——这正是真实实现和背稿的区别。</div>
   </div>
 
   <div class="qcard">
@@ -280,7 +284,7 @@ sendmsg(sock, &msg, 0);</pre>
     <div class="iv"><span class="who">面试官</span>你说解码 buffer 是 DMA-BUF。CPU 要直接读这块内存的时候，有没有什么要注意的？</div>
     <details class="cand"><summary>参考答案</summary><div class="body">
       <p>有，<b>cache 一致性</b>。DMA-BUF 是设备写入的，数据落在内存时 CPU cache 里的内容可能是旧的。内核提供 <span class="k">DMA_BUF_IOCTL_SYNC</span>（对应内核侧 begin/end_cpu_access）：CPU 读之前 SYNC_READ（invalidate 掉本地 cache 行），写完之后 SYNC_WRITE（flush 回内存），保证设备视角和 CPU 视角一致。</p>
-      <p>在我的链路里，帧数据从解码器出来后一路都是硬件消费——NPU、GPU、编码器直接拿 fd 用，不过 CPU，所以正常路径不碰这个；只有在调试时把帧 dump 到文件、或者 CPU 侧做少量后处理（比如画 OSD、算时间戳）才会走 SYNC。当时排查花屏问题的时候我 dump 过帧，就是先 SYNC 再读，不然 dump 出来的图就是错的，会误导排查方向。</p>
+      <p>在我的链路里，帧数据从解码器出来后一路都是硬件消费——RGA、NPU、编码器直接拿 fd 用，不过 CPU，所以正常路径不碰这个。真正会 CPU 读的只有 UI 显示那一支：UI 进程 <span class="k">mmap</span> 之后要把 Y/UV 平面读出来上传纹理，这里就是需要关注 SYNC 的位置。另外如果调试时想把帧 dump 成文件、或者 CPU 侧做少量后处理，也得先 SYNC 再读，不然 dump 出来的图本身就是脏的，反而误导排查方向。</p>
     </div></details>
     <div class="probe"><b>考察点</b>：硬件素养。答出 cache 一致性和 SYNC ioctl，面试官对你的评价会从「应用层选手」升级为「懂系统的人」。这题同时呼应 S10 的 bug 故事。</div>
   </div>
@@ -289,8 +293,8 @@ sendmsg(sock, &msg, 0);</pre>
     <div class="qmeta"><span class="qno">Q3.5</span><span class="tag deep">追</span></div>
     <div class="iv"><span class="who">面试官</span>好。那 UDP 不行吗？TCP 呢？你为什么选 Unix 域 socket，和网络 socket 比开销差在哪？</div>
     <details class="cand"><summary>参考答案</summary><div class="body">
-      <p>四个进程在同一块板子上，通信根本不出协议栈，选网络 socket 没有意义。Unix 域 socket 和 TCP/UDP 的核心区别：<b>它不经过 IP 协议栈</b>，内核里就是两个进程间的缓冲区拷贝（数据部分一次 memcpy，我传的是 fd 连这次拷贝都几乎没有），没有 TCP 头、没有拥塞控制、没有分片重组；寻址用文件系统路径，天然带<b>本地权限控制</b>（文件权限决定谁能连）。实测同机吞吐比 TCP loopback 高不少，延迟也更稳定。</p>
-      <p>另外 Unix 域 socket 有两个 TCP 给不了的能力：<b>SCM_RIGHTS 传 fd</b>，和 <b>SOCK_SEQPACKET 的消息边界</b>（我们用 SOCK_SEQPACKET 或自己封帧，拿回报文语义，不用处理 TCP 粘包）。所以本地 IPC 它是明确最优解。</p>
+      <p>四个进程在同一块板子上，通信根本不出协议栈，选网络 socket 没有意义。Unix 域 socket 和 TCP/UDP 的核心区别：<b>它不经过 IP 协议栈</b>，内核里就是两个进程间的缓冲区拷贝（数据部分一次 memcpy，我传的是 fd 连这次拷贝都几乎没有），没有 TCP 头、没有拥塞控制、没有分片重组；寻址用文件系统路径，天然带<b>本地权限控制</b>（文件权限决定谁能连）。省掉协议栈这一层，同机通信的吞吐和延迟都优于 TCP loopback。<span style="color:#8a6a2f">【若面试官追问具体数字：本机实测数据请在板子上补测后再报】</span></p>
+      <p>另外 Unix 域 socket 有几个 TCP 给不了的能力：<b>SCM_RIGHTS 传 fd</b>，还有<b>文件系统路径寻址带来的权限控制</b>。消息边界这一块要说准：我们用的是 <span class="k">SOCK_STREAM</span>，它和 TCP 一样是字节流、没有报文边界。<b>帧通道</b>（主进程→Qt、人脸→Qt）走 <span class="k">sendmsg/recvmsg</span>，FrameMeta 是<b>定长结构体</b>、一次收发正好一条，元数据和 fd 在同一个消息里发出，边界靠结构体大小天然对齐。多消息类型复用的<b>主进程↔设备进程</b>那条，用「4 字节 tag + payload」自己封帧：发送端把 tag 和 payload 拼成一个 struct <b>一次 send</b>，保证整条原子落地。接收端两边策略不同——<b>设备进程侧用 MSG_WAITALL 先把 4 字节 tag 读满、再按 tag 读对应长度的 payload</b>；<b>主进程侧用 MSG_PEEK「先探整条再消费」：tag 和 payload 在缓冲里全部到齐才消费，否则一个字节都不动</b>，避免读完 tag、payload 还没到就被误当成下一条 tag 造成协议失步。这里正好澄清一下：我们<b>废弃的是「MSG_PEEK 按总长度匹配」的旧方案</b>——多条消息合并进缓冲时，peek 回来的长度既不等于 16 也不等于 88，匹配不上就死循环；现在主进程用的 peek 是「探长度再消费」的新写法，和它不一样。理论上 <span class="k">SOCK_SEQPACKET</span> 能天然给消息边界，我们没用它。</p>
     </div></details>
     <div class="probe"><b>考察点</b>：网络编程基本功顺手一起考了。「不过协议栈」「权限控制」「消息边界」三点齐了就是满分答案。</div>
   </div>
@@ -306,9 +310,9 @@ sendmsg(sock, &msg, 0);</pre>
     <div class="iv"><span class="who">面试官</span>你这 8 路解码，GStreamer 的 pipeline 是怎么搭的？把主要的元素链说一下。</div>
     <details class="cand"><summary>参考答案</summary><div class="body">
       <p>每路一个 pipeline，核心链是：</p>
-      <pre class="code">rtspsrc ! rtph264depay ! h264parse ! mppvideodec ! appsink</pre>
-      <p><span class="k">rtspsrc</span> 负责拉流和 depay（它内部有 pad-added 动态协商，要回调里再链接）；<span class="k">h264parse</span> 把 NALU 流整理成带时间戳的帧、处理 SPS/PPS；<span class="k">mppvideodec</span> 是 Rockchip MPP 的硬解插件，协商成功时输出 DMA-BUF；末端 <span class="k">appsink</span> 把 buffer 交还给我的代码——因为后面要送 NPU、跨进程分发，必须拿回控制权，不能再让 GStreamer 接管。</p>
-      <p>appsink 我关掉了内部队列的丢弃策略、按「pull 模式 + 有界队列」取帧，拿到 <span class="k">GstSample</span> 后从中取出 <span class="k">GstMemory</span>，用 <span class="k">gst_dmabuf_memory_get_fd</span> 提取 DMA-BUF fd——这就是零拷贝链路的起点。8 路就是 8 个独立 pipeline 实例，各自有独立的 streaming 线程，互不阻塞。</p>
+      <pre class="code">rtspsrc(latency=0 protocols=tcp) ! rtph264depay ! h264parse ! mppvideodec(format=NV12) ! queue(leaky) ! appsink</pre>
+      <p><span class="k">rtspsrc</span> 负责拉流和 depay（它内部有 pad-added 动态协商，要在回调里再链接）；<span class="k">h264parse</span> 把 NALU 流整理成带时间戳的帧、处理 SPS/PPS；<span class="k">mppvideodec</span> 是 Rockchip MPP 的硬解插件，协商成功时输出 DMA-BUF；中间挂了一个 <span class="k">queue</span>（<span class="k">max-size-buffers=4 + leaky=downstream</span>）吸收突发、下游慢时丢旧帧；末端 <span class="k">appsink</span> 把 buffer 交还给我的代码——因为后面要送 NPU、跨进程分发，必须拿回控制权，不能再让 GStreamer 接管。</p>
+      <p>appsink 我配的是 <span class="k">sync=false + max-buffers=1 + drop=true</span>（只留最新一帧、新帧到了就丢旧帧），并开 <span class="k">emit-signals</span> 挂 <span class="k">new-sample</span> 回调取帧——拿到 <span class="k">GstSample</span> 后从中取出 <span class="k">GstMemory</span>，用 <span class="k">gst_dmabuf_memory_get_fd</span> 提取 DMA-BUF fd，这就是零拷贝链路的起点。8 路就是 8 个独立 pipeline 实例，各自有独立的 streaming 线程，互不阻塞。</p>
     </div></details>
     <div class="probe"><b>考察点</b>：能否白描 pipeline 与线程模型。说出「rtspsrc 动态 pad」「appsink 拿回控制权」「gst_dmabuf_memory_get_fd」三个细节，真实做过与否一目了然。</div>
   </div>
@@ -390,7 +394,7 @@ sendmsg(sock, &msg, 0);</pre>
     <div class="qmeta"><span class="qno">Q6.1</span><span class="tag pit">坑</span><span class="tag hot">频</span></div>
     <div class="iv"><span class="who">面试官</span>简历写「NPU 三核并行推理，按 worker 绑核」。说说什么意思？为什么不一个模型跑一路？</div>
     <details class="cand"><summary>参考答案</summary><div class="body">
-      <p>RK3588 的 NPU 是<b>三个物理核</b>，每个 2TOPS。如果只用一个 context 串行推理，三个核只用到三分之一。我的做法是<b>起三个推理 worker 线程，每个线程持有自己独立的 rknn context</b>，初始化时用 core_mask 分别绑定到 NPU 的 0、1、2 核；帧从解码侧进 MPMC 队列，哪个 worker 空闲哪个取走。这样任一时刻三个核在并行处理三帧（来自不同通道），吞吐接近单核的三倍。</p>
+      <p>RK3588 的 NPU 是<b>三个物理核</b>，每个 2TOPS。如果只用一个 context 串行推理，三个核只用到三分之一。我的做法是<b>起 6 个推理 worker 线程（编译期 <span class="k">WORKER_NUM=6</span>），每个线程先用 <span class="k">rknn_dup_context</span> 复制出自己的 rknn context</b>，再按 <span class="k">worker_id % 3</span> 用 <span class="k">rknn_set_core_mask</span> 把 core_mask 轮流设成 NPU 的 <b>0、1、2 核</b>——6 个 worker 就是 0→1→2→0→1→2，每个核上挂两个 worker；帧从解码侧进 MPMC 队列，哪个 worker 空闲哪个取走。这样任意时刻三个核都有 worker 在跑，最多三帧并行（来自不同通道），吞吐接近单核的三倍。</p>
       <p>为什么不「一路模型一个 context」：8 路对 3 核不整除，静态分配必然有的核闲死有的忙死；中心队列 + 空闲领取是动态负载均衡，哪路流量大就自然多吃配额。</p>
       <p>还有一个容易被忽略的点：rknn context <b>不能多线程并发 run</b>——内部有状态，并发会串行化甚至出错，所以「一个 context 一个专属线程」本身也是正确性要求，不只是性能优化。</p>
     </div></details>
@@ -411,14 +415,16 @@ sendmsg(sock, &msg, 0);</pre>
     <div class="qmeta"><span class="qno">Q6.3</span><span class="tag pit">坑</span></div>
     <div class="iv"><span class="who">面试官</span>「SPSC RingBuffer + MPMC 无锁队列」。说实话，校招简历写无锁队列的很多，真懂的很少。你先讲 SPSC 怎么做到不加锁的？</div>
     <details class="cand"><summary>参考答案</summary><div class="body">
-      <p>SPSC 能无锁的根本原因是<b>单写者原则</b>：预分配一个固定大小的数组，两个原子变量 head（消费者读、生产者写）和 tail（生产者读、消费者写）。<b>生产者只写 head 和数组内容，消费者只写 tail</b>——每个变量永远只有一个线程写，写者之间没有竞争，自然不需要锁。</p>
-      <p>正确性靠<b>内存序</b>保证：生产者先把帧数据写进槽位，再以 <span class="k">memory_order_release</span> 发布 head；消费者以 <span class="k">memory_order_acquire</span> 读 head——acquire 保证消费者看到新 head 时，一定也能看到槽位里的数据。判断空满用「head == tail 为空、(head+1)%size == tail 为满」，容量取 2 的幂，取模换成位与。</p>
-      <pre class="code">bool push(Frame *f) {
-    size_t h = head.load(std::memory_order_relaxed);
-    if ((h + 1) & mask == tail.load(std::memory_order_acquire)) return false; <span class="cm">// 满</span>
-    slots[h & mask] = f;
-    head.store(h + 1, std::memory_order_release);   <span class="cm">// 发布：数据先于索引可见</span>
-    return true;
+      <p>SPSC 能无锁的根本原因是<b>单写者原则</b>：预分配一个固定大小的数组，两个原子计数器——<span class="k">write_count_</span>（只有生产者写）和 <span class="k">read_count_</span>（只有消费者写）。<b>每个变量永远只有一个线程写，写者之间没有竞争，自然不需要锁。</b></p>
+      <p>我这份是<b>计数器派 + 覆盖式</b>：两个计数都是无限增长的逻辑值（不回绕），物理下标 = 计数 &amp; (CAPACITY-1)；元素个数 = write − read，<b>直接相减</b>判断空满（空：write==read；满：write−read==CAPACITY），不用再 &amp; mask 判满。写满时不丢新数据，而是把 read_count_ 前移一格<b>覆盖最旧的一帧</b>——这正好对上监控「丢旧取新」的语义。正确性靠<b>内存序</b>：生产者先把数据写进槽位，再以 <span class="k">memory_order_release</span> 发布 write_count_；消费者以 <span class="k">memory_order_acquire</span> 读它——保证看到新计数时一定也看到槽位里的数据。</p>
+      <pre class="code">void write(T item) {
+    size_t w = write_count_.load(std::memory_order_relaxed);
+    size_t r = read_count_.load(std::memory_order_acquire);
+    if (w - r == CAPACITY) {                     <span class="cm">/* 满：覆盖最旧 */</span>
+        read_count_.store(r + 1, std::memory_order_release);
+    }
+    buffer_[w &amp; MASK] = std::move(item);
+    write_count_.store(w + 1, std::memory_order_release); <span class="cm">/* 发布 */</span>
 }</pre>
     </div></details>
     <div class="probe"><b>考察点</b>：这是全面试最硬的一题。<b>钩子来源</b>：简历「无锁队列」四个字。「单写者 + release/acquire」两句话讲清楚就是满分；讲不清楚这词就是负资产——宁可简历删掉。</div>
@@ -428,24 +434,21 @@ sendmsg(sock, &msg, 0);</pre>
     <div class="qmeta"><span class="qno">Q6.4</span><span class="tag deep">追</span></div>
     <div class="iv"><span class="who">面试官</span>嗯，那 MPMC 呢？多生产者同时 push，head 的竞争怎么处理？ABA 问题知道吗，你的队列怎么应对？</div>
     <details class="cand"><summary>参考答案</summary><div class="body">
-      <p>MPMC 复杂一个量级：head 变成多写者，需要 CAS 循环——所有生产者竞争同一个 head，用 <span class="k">compare_exchange_weak</span> 抢坑位，抢到的写槽位再正式提交索引；更讲究的做法是两级索引（先原子 reserve 坑位、写完数据再 publish），Vyukov MPMC 队列就是这个思路，每个槽位带一个 sequence 序号。</p>
-      <p><b>ABA</b>：线程 A 读到 head=5，被抢占；线程 B 完整转了一圈，head 又变回 5——A 的 CAS 发现 head 还是 5，误判「没变过」，其实队列状态早变了，可能覆盖别人的数据。标准解法是<b>带版本号的指针</b>（tagged pointer：地址 + 递增计数打包进一个原子变量，x86-64 可以塞进一个 64 位原子做 double-width），或者用 DCAS。</p>
-      <p>坦白说，<b>我的 MPMC 实现做了简化</b>：因为我的场景里每帧生命周期由 Frame 引用计数管着、且队列是「覆盖式」的短队列，我实际用的是【按实际核对：A. 简化 Vyukov 序号版，未处理完整 ABA / B. 干脆用了自旋锁保护的小队列】——这是当时在「实现复杂度」和「我的场景是否真会踩 ABA」之间做的取舍。如果场景要求严格 MPMC，我会换成带 sequence 的完整实现。这点我想得很清楚，不是回避。</p>
+      <p>MPMC 复杂一个量级：head 位置变成多写者，需要 CAS 循环——所有生产者竞争同一个位置，用 <span class="k">compare_exchange_weak</span> 抢坑位，抢到的写槽位再正式提交；更讲究的做法是每个槽位带一个 sequence 序号、先原子 reserve 坑位写完数据再 publish（Vyukov 队列就是这个思路）。</p>
+      <p><b>ABA</b>：线程 A 读到 head=5，被抢占；线程 B 完整转了一圈，head 又变回 5——A 的 CAS 发现 head 还是 5，误判「没变过」，其实队列状态早变了，可能覆盖别人的数据。标准解法是<b>带版本号的指针</b>（tagged pointer：地址 + 递增计数打包进一个原子变量），或者用 DCAS。</p>
+      <p>我这份<b>没有自己造轮子</b>，用的是 <span class="k">rigtorp::MPMCQueue</span>（Erik Rigtorp 的<b>有界</b> MPMC 队列）。它能天然回避 ABA，关键在它<b>不是链表、不动态申请/回收节点</b>——底层是一块固定大小的槽位数组，每个槽位一个 sequence 计数器，生产者/消费者靠槽位序号判断「这一格是不是轮到我」。既然节点地址永不复用，就不存在「指针看着一样、身份却变了」的 ABA 前提。边界我也说清楚：它是有界队列，push 满时返回失败——我的上游按「满了就丢这一帧」处理，符合监控语义。</p>
     </div></details>
-    <div class="probe"><b>考察点</b>：诚实度 + 深度边界。「知道 ABA 是什么、知道自己实现没处理、知道为什么我的场景可以不处理」——这三连比背一个「我解决了 ABA」可信得多。面试官挖到这里，就是想看你<b>能力的边界</b>长什么样。</div>
+    <div class="probe"><b>考察点</b>：诚实度 + 深度边界。「知道 ABA 是什么、知道自己用的是有界 MPSC 库、知道它为什么天然无 ABA（节点不复用）」——这三连比背一个「我解决了 ABA」可信得多。面试官挖到这里，就是想看你<b>能力的边界</b>长什么样。</div>
   </div>
 
   <div class="qcard follow">
     <div class="qmeta"><span class="qno">Q6.5</span><span class="tag deep">追</span></div>
-    <div class="iv"><span class="who">面试官</span>最后一个细节：你 head 和 tail 两个原子变量，会不会有伪共享的问题？</div>
+    <div class="iv"><span class="who">面试官</span>最后一个细节：你 write_count_ 和 read_count_ 两个原子变量，会不会有伪共享的问题？</div>
     <details class="cand"><summary>参考答案</summary><div class="body">
-      <p>会，这是经典坑：head 和 tail 如果挨着声明，大概率落在<b>同一个 64 字节 cache line</b>——生产者写 head 会让消费者的 cache line 失效，反之亦然，两个线程各在一核上乒乓 invalidate，队列越快性能越差，而且看起来「没锁却像有锁」。解法是<b>按 cache line 对齐并填充</b>：</p>
-      <pre class="code">struct alignas(64) PaddedAtomic {
-    std::atomic&lt;size_t&gt; v;
-    char pad[64 - sizeof(std::atomic&lt;size_t&gt;)];
-};
-PaddedAtomic head, tail;   <span class="cm">/* 各占独立 cache line */</span></pre>
-      <p>Frame 对象池同理——池元数据也别和热数据挤一行。我是压测时用 <span class="k">perf c2c</span> 的思路排查过 cache line 争用才补上的对齐【按实际核对：若没做过 perf c2c，就说「按 ARM64 的 64 字节行宽直接对齐预防」】。</p>
+      <p>会，这是经典坑：write_count_ 和 read_count_ 如果挨着声明，大概率落在<b>同一个 64 字节 cache line</b>——生产者写 write_count_ 会让消费者的这条 cache line 失效，反之亦然，两个线程各在一核上乒乓 invalidate，队列越快性能越差，看起来「没锁却像有锁」。解法是<b>用 alignas(64) 把两个计数各自对齐到独立 cache line</b>：</p>
+      <pre class="code">alignas(64) std::atomic&lt;size_t&gt; write_count_;   <span class="cm">/* 生产者独占一行 */</span>
+alignas(64) std::atomic&lt;size_t&gt; read_count_;    <span class="cm">/* 消费者独占一行 */</span></pre>
+      <p>Frame 对象池的元数据同理——别和热数据挤一行。我是按 ARM64 的 64 字节行宽直接对齐预防的；要验证可以拿 <span class="k">perf c2c</span> 抓 cache line 争用【按实际核对：若没做过 perf c2c，就照实说「对齐是按行宽预防」】。</p>
     </div></details>
     <div class="probe"><b>考察点</b>：体系结构素养。能主动聊伪共享的本科生极少，这题答出来基本宣告「并发这块过了」。</div>
   </div>
@@ -461,7 +464,8 @@ PaddedAtomic head, tail;   <span class="cm">/* 各占独立 cache line */</span>
     <div class="iv"><span class="who">面试官</span>简历上写「检测状态机驱动自动录像」。为什么需要状态机？我每帧检测到人就录，检测不到就停，不就完了？</div>
     <details class="cand"><summary>参考答案</summary><div class="body">
       <p>「每帧判断」是写 demo 的思路，直接上生产会出三类问题。<b>第一是抖动</b>：检测本身有闪烁——人走动、遮挡、光照变化，一秒内「有人/没人」可能翻转好几次，录像就会反复启停，产生一堆碎片文件，Flash 也被频繁写入磨损。<b>第二是语义缺失</b>：业务要的是「人<b>停留</b>超过 N 秒才录」「人离开后<b>延录</b> M 秒」「深夜<b>免打扰</b>时段不录」——这些全是<b>时间维度</b>的条件，逐帧判断根本表达不了。<b>第三是不可测试</b>：规则散落在 if-else 里，没法枚举验证。</p>
-      <p>状态机把「时间」和「事件」变成一等公民。我的核心状态是：<span class="k">IDLE → PRESENT(确认中) → DWELL(停留计时) → RECORDING → POST(延录)</span>，外加 DND 作为横切抑制。转移条件带滞回（连续 K 帧有人才确认进入、连续 K 帧没人确认离开），录像只在 DWELL 超阈值时开一次、POST 计时到才关——抖动被滞回吸收，规则集中在转移表里，可枚举、可单测。</p>
+      <p>状态机把「时间」变成一等公民。我的核心是：每路流持有一个 <span class="k">StreamState</span>（stream 级录像状态）+ 最多 4 个 <span class="k">DeviceState</span>（每个设备 ROI 一个人/离开状态），每个设备状态记录 <span class="k">person_present</span>、<span class="k">first_seen</span>、<span class="k">last_seen</span>、是否已触发登记、免打扰到期时间，时间戳用 <span class="k">CLOCK_MONOTONIC</span>。</p>
+      <p>防抖靠阈值而不是计数：人进入（在 ROI 内）记录 first_seen，停留超过 <span class="k">stay_threshold_ms</span> 才触发「登记 + 录像」；人离开后以 recording_start_time 为基准，超过 <span class="k">absence_threshold_ms</span> 才停录——阈值（毫秒级）比「连续 K 帧」对帧率波动更鲁棒。录像决策是 stream 级聚合：只要该路<b>任一</b>设备停留达标就开录，多个设备同时达标不会重复触发，全部离开超阈值才停。事件用<b>位掩码</b>一次性吐出（bit0 触发人脸登记 / bit1 开录 / bit2 停录），单次调用即可驱动所有下游。</p>
     </div></details>
     <div class="probe"><b>考察点</b>：从「能跑」到「能用」的工程鸿沟。「滞回/防抖」「时间维度」「可测试」三个词各值一档评分。</div>
   </div>
@@ -470,17 +474,16 @@ PaddedAtomic head, tail;   <span class="cm">/* 各占独立 cache line */</span>
     <div class="qmeta"><span class="qno">Q7.2</span><span class="tag deep">追</span></div>
     <div class="iv"><span class="who">面试官</span>那状态机怎么实现的？用表驱动还是 if-else？多路场景下，8 路各自一个状态机实例？</div>
     <details class="cand"><summary>参考答案</summary><div class="body">
-      <p>每路一个独立实例，互不影响——状态机本身无全局状态，是纯函数式的：输入（当前状态 + 事件 + 时间戳），输出（新状态 + 动作）。实现用<b>转移表驱动</b>：状态和事件枚举化，二维表查 [state][event] 得到转移函数，转移函数里处理计时和阈值。比 if-else 好在新增状态或事件只改表不改逻辑骨架，而且整张表打印出来就是文档。</p>
-      <pre class="code">struct Transition { State next; Action act; };
-static Transition table[STATE_MAX][EVENT_MAX];  <span class="cm">// 编译期填表</span>
-void step(ChannelFSM *fsm, Event ev, int64_t now) {
-    Transition t = table[fsm->state][ev];
-    if (t.act) t.act(fsm, now);       <span class="cm">// 进入/退出动作：开录像、停录像、清计时器 */</span>
-    fsm->state = t.next;
-}</pre>
-      <p>事件来自推理结果（有人/无人/多目标取最大置信），时间条件在 PRESENT/DWELL/POST 状态的 act 里检查 now - enter_time。这样每个通道的状态快照还能顺手写进 SQLite，UI 上能回放「这一路为什么触发了录像」——排查误报特别有用。</p>
+      <p>每路一份独立状态，互不影响——状态全放在一个 <span class="k">DetectionStateManager</span> 里（streams[MAX_CHANNEL]，每路再挂最多 4 个 DeviceState），没有全局变量；核心函数 <span class="k">ds_update</span> 是「输入本帧检测框 + 时间、输出事件位掩码」的纯逻辑，只改传入的状态结构，8 路各自独立调用。</p>
+      <p>实现上没有用二维转移表——因为这个状态机的分支本质是<b>时间条件</b>，不是「状态×事件」的稀疏组合，用 struct + 阈值判断更直白、更好改。核心就三件事：<b>①设备级</b>按「本帧框有没有落在这个 ROI 内」翻转 person_present、维护 first_seen/last_seen；<b>②流级</b>看有没有任一设备「有人且停留 ≥ stay 阈值」，从而置/清 stream_recording，无人且超过 absence 阈值才停；<b>③免打扰</b>到点自动清除（这里我修过一个 bug：时间差方向写反了，未到期反而被清，改成 now − expire ≥ 0 才清）。</p>
+      <pre class="code"><span class="cm">/* 每帧调一次：框是否落在 ROI → 更新设备级 → 聚合出流级事件 */</span>
+int bits = ds_update(&amp;mgr, boxes, box_count, stream_id, roi);
+if (bits &amp; 1) trigger_recognition(stream_id);   <span class="cm">/* 停留达标 → 触发人脸登记 */</span>
+if (bits &amp; 2) start_recording(stream_id);       <span class="cm">/* 开始录像 */</span>
+if (bits &amp; 4) stop_recording(stream_id);        <span class="cm">/* 无人超阈值 → 停录像 */</span></pre>
+      <p>这样「可用性」落到了实处：新增一条规则（比如深夜不触发）只要在免打扰判断里加一句；误报排查时把位掩码和 first_seen/last_seen 打出来，就能分清是「根本没检测到」还是「停留没够阈值」——比规则散落在业务 if-else 里好查得多。ROI 热重载时还有 <span class="k">ds_apply_roi</span> 专门同步设备槽位、保留流级录像状态，避免状态机与录像线程失同步。</p>
     </div></details>
-    <div class="probe"><b>考察点</b>：实现品味。表驱动 + 无全局状态 + 状态可持久化，三个点说明你不是「画了个状态图就往上写」。</div>
+    <div class="probe"><b>考察点</b>：实现品味。「无全局状态、按 ROI 分解到设备级、时间阈值防抖、位掩码驱动下游、ROI 热重载不失同步」——这些点说明你不是「画了个状态图就往上写」。<b>注意</b>：面试官用「表驱动还是 if-else」问，你不必硬凑「表驱动」，直接讲你为什么选 struct + 阈值（分支本质是时间条件）即可，反而显得是真做过。</div>
   </div>
 </section>
 
@@ -494,8 +497,8 @@ void step(ChannelFSM *fsm, Event ev, int64_t now) {
     <div class="iv"><span class="who">面试官</span>人脸识别为什么要搞两个输入通道？一个 USB 摄像头不够吗？</div>
     <details class="cand"><summary>参考答案</summary><div class="body">
       <p>两个通道服务两个场景。<b>USB 摄像头（V4L2 采集）</b>装在工位/门口，做主动签到——人凑近刷脸，近距离画质好、正脸率高。<b>RTSP 拉流那路</b>是复用已有的监控摄像头画面，做被动识别/设备使用登记——人不需要配合，但角度和画质差一些。两条通路殊途同归进同一个 InspireFace 流水线：检测人脸 → 提取特征 → 和底库比对。</p>
-      <p>工程上 USB 通道是 V4L2 MMAP 采集 YUYV，监控通道直接复用主检测进程的解码能力——通过 IPC 拿帧，不重复解码。两路帧率都不需要 25fps，人脸检测本身跑在【NPU 的哪个分配方案】。</p>
-      <p>这里有个 NPU 资源分配的设计：RK3588 三个 NPU 核，主检测的 YOLOv5 用掉三个核（worker 绑核），人脸这路 InspireFace 再去抢核就会互相干扰——所以我把人脸推理安排成【按实际核对：A. 错峰：人脸任务量小，走单核分时 / B. 让出：检测用 2 核、人脸专用 1 核】的方案，权衡检测吞吐和人脸响应延迟。</p>
+      <p>工程上 USB 通道是 V4L2 MMAP 采集 YUYV，监控通道直接复用主检测进程的解码能力——通过 IPC 拿帧，不重复解码。两路帧率都不需要 25fps，人脸识别只在有事件时短时跑。</p>
+      <p>这里有个 NPU 资源分配的现实问题：RK3588 三个 NPU 核被主检测的 6 个 YOLOv5 worker 按 <span class="k">worker_id % 3</span> 占着（每个核挂两个 worker），人脸这路的 InspireFace 也跑在同一个 NPU 上，硬抢核会互相拖慢。我们<b>没有给 InspireFace 单独绑核</b>（它内部自己管理 RKNN 上下文），而是靠<b>负载错峰</b>：检测是持续负载、人脸识别只在有人停留触发时短时突发，任务量差一个数量级，实际并发冲突有限；真要冲突，第一顺位是降检测采样率给人脸让路。【按实际核对：把人脸识别的实测时延、与检测叠加时是否掉帧补上】</p>
     </div></details>
     <div class="probe"><b>考察点</b>：需求到设计的推导（不是堆功能）+ 资源全局观。第二段「NPU 核怎么分」是面试官真正想听的——两个 AI 任务抢三个核，你有没有全局调度视角。</div>
   </div>
@@ -520,11 +523,12 @@ void step(ChannelFSM *fsm, Event ev, int64_t now) {
     <div class="qmeta"><span class="qno">Q9.1</span><span class="tag pit">坑</span></div>
     <div class="iv"><span class="who">面试官</span>8 路画面用 OpenGL 渲染，你拿到的是 NV12 的 DMA-BUF fd——OpenGL 纹理怎么吃 YUV 数据？说一下整条路。</div>
     <details class="cand"><summary>参考答案</summary><div class="body">
-      <p>路径是 <b>fd → EGLImage → 纹理 → shader 采样转 RGB</b>。先用 EGL 扩展 <span class="k">eglCreateImageKHR</span>（target 是 EGL_LINUX_DMA_BUF_EXT）把 fd 包装成 EGLImage，再 <span class="k">glEGLImageTargetTexture2DOES</span> 绑到纹理上——这一步 GPU 直接映射那块物理内存，没有上传拷贝。NV12 是两个平面（Y + 交错 UV），每个平面作为 fd 的 offset+stride 传入。</p>
-      <p>采样端：fragment shader 里两次采样，Y 一次、UV 一次，按 BT.601/709 矩阵算出 RGB 输出。也可以用 GL_TEXTURE_EXTERNAL_OES + samplerExternalOES 让驱动做转换，效果等价。</p>
-      <p>8 路就是 8 组纹理对象，渲染循环里按 2×4 网格画 8 个 quad，每路一个模型矩阵控制全屏切换。这里有两个我踩过的坑——<b>stride 不是 width</b>、<b>fd 的生命周期要跟渲染同步</b>——正好是我遇到的那个偶发花屏 bug 的根源，您可以听我讲讲这个故事（引向 S10）。</p>
+      <p>我的路径是 <b>fd → mmap → 两张纹理 → fragment shader 做 YUV→RGB</b>。UI 进程拿到 DMA-BUF fd 后不搬数据，先 <span class="k">mmap</span> 到用户态拿到虚拟地址；按 NV12 的平面布局切出 Y 平面（前 width×height 字节）和紧随其后的 UV 平面（U/V 交错存放）。然后建两张纹理：<b>Y 用单通道 <span class="k">R8_UNorm</span>（width×height），UV 用双通道 <span class="k">RG8_UNorm</span>（width/2 × height/2）</b>，各用一次 <span class="k">glTexSubImage2D</span> 把平面数据传到纹理上，再 munmap。</p>
+      <p>采样端：fragment shader 里分别采 Y 纹理的 .r 和 UV 纹理的 .rg，按 BT.601 矩阵（r = y + 1.402v；g = y − 0.344u − 0.714v；b = y + 1.772u）算出 RGB——<b>色彩空间转换放在 GPU 里做，CPU 侧不做任何格式转换</b>。</p>
+      <p>这条路的取舍要说清楚：相比 EGLImage/DRM_PRIME 那条「GPU 直接映射、零上传」的路，我这里多了一次 <b>GPU 纹理上传</b>——但 CPU 只是把 mmap 出来的指针交给 glTexSubImage2D，没有逐像素 memcpy、也没有 CPU 侧的格式转换。选它是因为实现简单、不依赖 EGL 扩展，8 路 1080p 的上传压力可接受。</p>
+      <p>8 路就是 8 组纹理对象，渲染循环里按 2×4 网格画 8 个 quad，每路一个模型矩阵控制全屏切换。这里有个必须处理对的点——<b>fd 的生命周期</b>：帧接收线程存缓存时 dup 一份、渲染时再 dup 一份，上传完立刻 close 掉自己那份，绝不 close 别人在用的 fd，这正是诱发我那次偶发花屏的地方（引向 S10）。</p>
     </div></details>
-    <div class="probe"><b>考察点</b>：图形栈素养。主动提到 stride 和生命周期两个坑 = 给 S10 铺路，面试官顺着就进你的故事——<b>这是全场最重要的一次埋钩</b>：让他以为是自己选的话题。</div>
+    <div class="probe"><b>考察点</b>：图形栈素养 + 对「上传 vs 零上传」取舍的诚实度。主动点出「NV12 双平面切成 R8/RG8 两张纹理」「fragment shader 转 RGB」「fd 生命周期」，再顺势引到 S10 的故事——<b>这是全场最重要的一次埋钩</b>：让他以为是自己选的话题。<b>注意</b>：别硬吹 EGLImage 零上传，你的实现就是 mmap + glTexSubImage2D，照实说反而更抗追问。</div>
   </div>
 
   <div class="qcard">
@@ -549,13 +553,15 @@ void step(ChannelFSM *fsm, Event ev, int64_t now) {
     <div class="iv"><span class="who">面试官</span>这个项目里，你遇到的最难的一个问题是什么？怎么定位、怎么解决的？</div>
     <details class="cand"><summary>参考答案（五段式，约 2 分钟）</summary><div class="body">
       <p><b>现象</b>：8 路画面里某一路<b>偶发</b>花屏——不是必现，压力小的时候正常，跑得越久越容易出，而且花的是「上一帧的残影和当前帧混在一起」的样子；同一路的录像文件却是完好的。这就很怪：同一块 DMA-BUF，录像端读着正常，显示端花。</p>
-      <p><b>排查</b>：我先在链路上分段落盘——解码输出后 dump 一份、IPC 传过去之后 dump 一份。dump 前记得做 DMA_BUF_IOCTL_SYNC，不然自己 dump 的数据就是脏的。分段对比发现解码侧完好、IPC 之后才开始花，说明问题在显示消费端。再看现象特征「残影混帧」，指向<b>buffer 被提前回收复用</b>。</p>
-      <p><b>根因</b>：UI 进程拿到 fd 建了 EGLImage 就认为完事了，但我的帧池是<b>引用计数管理</b>的——UI 侧只持了 EGLImage，没给 Frame 加引用；GPU 渲染是异步的，帧池以为这帧消费完了，把它还回池子给下一路复用，GPU 这时还在采样旧内容，就出现了「新旧帧叠加」的花屏。偶发性来自 GPU 异步完成和池子回收的<b>竞态窗口</b>。</p>
-      <p><b>修复</b>：让 EGLImage 的生命周期挂到 Frame 引用上——UI 侧拿到 Frame 先 ref，渲染真正完成（swap 后）再 unref；实现上用 <span class="k">glFenceSync</span> 确认 GPU 用完才释放。修完连跑 48 小时压测无复现。</p>
-      <p><b>教训</b>：零拷贝把「数据所有权」从隐式（memcpy 完就归你）变成显式（大家共享同一块内存）——省了拷贝，就要把生命周期协议补回来。后来我把「谁持有、谁释放」写进了 IPC 框架的文档，全队遵守。</p>
+      <p><b>排查</b>：我先在链路上分段落盘——解码输出后 dump 一份、IPC 传过去之后 dump 一份。dump 前记得做 DMA_BUF_IOCTL_SYNC，不然自己 dump 的数据就是脏的。分段对比发现解码侧完好、IPC 之后才开始花，说明问题在显示消费端。再看现象特征「残影混帧」，指向<b>buffer 被提前回收复用</b>——显示端拿到的内存块内容，在还没画完时已经被别人改写成了新帧。</p>
+      <p><b>根因</b>：出在 UI 侧的 <b>fd 生命周期</b>。我们的 fd 是向 GstSample「借」的、由 GStreamer 引用计数管着；UI 端我在 <span class="k">FrameReceiver</span> 里对每路缓存做 <span class="k">dup</span>、渲染时再 <span class="k">dup</span> 一份上传完就 <span class="k">close</span>。问题出在当时的旧写法：我拿到 recvmsg 传来的那个原始 fd，<b>直接拿来 mmap + glTexSubImage2D 后顺手 close 了它</b>——而同一帧的缓存副本和渲染副本还指向这块内存，一旦 GStreamer 侧引用计数归零、DMA-BUF 被回收并重新分配给新帧，正在上传/渲染的旧内容就和新区块的内容<b>交叠</b>，画面上就是「新旧帧叠加」。偶发性来自「回收复用」和「GPU 上传完成」之间的竞态窗口——压力越大、复用越快，越容易踩中。</p>
+      <p><b>修复</b>：把 fd 的生命周期理清——<b>recvmsg 拿到的原始 fd 处理完立即 close；需要保留的画面缓存自己 dup 一份，渲染时再 dup 一份、上传完 close；绝不 close 别人还在用的引用</b>。同时缓存副本只在下一帧到达时替换（close 旧的那个），保证渲染线程和接收线程各自持有的 fd 引用计数互相独立。修完连跑 48 小时压测无复现。</p>
+      <p><b>教训</b>：零拷贝把「数据所有权」从隐式（memcpy 完就归你）变成显式（大家共享同一块内存）——省了拷贝，就要把生命周期协议补回来。后来我把「谁持有、谁释放、谁 dup、谁 close」写进了 IPC 框架的注释和文档，全队遵守。</p>
     </div></details>
-    <div class="probe"><b>考察点</b>：真实性只看细节——「录像正常显示花」「dump 前 SYNC」「残影特征指向复用竞态」「glFenceSync」这些环环相扣的推理链，编是编不出来的。<b>备用故事</b>（若面试官追问「还有吗」）：多进程 SQLite 偶发 SQLITE_BUSY → 上 WAL + busy_timeout；GStreamer appsink 拿不到 DMA-BUF → caps 没协商成 dmabuf pool。【按实际核对：以你真实踩过的坑为准替换，结构不变】</div>
+    <div class="probe"><b>考察点</b>：真实性只看细节——「录像正常显示花」「dump 前 SYNC」「残影特征指向 fd 复用竞态」「dup/close 各自独立」这些环环相扣的推理链，编是编不出来的。<b>备用故事</b>（若面试官追问「还有吗」）：多进程 SQLite 偶发 SQLITE_BUSY → 上 WAL + busy_timeout；GStreamer appsink 拿不到 DMA-BUF → caps 没协商成 dmabuf pool。<br><b style="color:#8a2a28">【务必核对】</b>：以上是按你的真实渲染路径（mmap + glTexSubImage2D + dup/close）推演出来的一条一致故事线，<b>不是</b>从代码里读出来的历史事实。面试前请用你当时<b>真正</b>踩过的坑替换细节（现象/排查手段/修复动作），结构保持不变——面试官靠细节验证真伪，编的细节一定会露馅。</div>
   </div>
+
+  <div class="callout"><b>另一个「代码里有据可查」的真 bug（推荐用这个）</b>：录像链路里，rkmpp 编码器 <span class="k">async_depth=4</span> 会<b>内部缓存多帧再异步编码</b>；我最初把从 GstSample 借来的 fd <b>直接</b>交给编码器，等主进程那个 Frame/task 析构、<span class="k">gst_sample_unref</span> 一跑，那个 fd 就被关了，而编码器还在异步用它——访问到<b>已关闭的 fd</b>，录像偶发失败/报错。<b>排查</b>：把「关闭时机」和「编码器实际使用时机」对齐后，发现关闭发生在编码之前。<b>根因</b>：异步硬件编码的「在途帧」活得比我以为的久。<b>修复</b>：交给 FFmpeg 前 <span class="k">dup</span> 一份 fd，用 <span class="k">av_buffer_create</span> 让 AVBufferRef 持有这个 dup 出来的 fd，释放回调里 close，生命周期完全交给 AVBufferRef 引用计数、与外部 FramePtr 解耦。<b>状态</b>：这条在 <span class="k">video_recorder.cpp</span> 里是以「★ 关键修复」注释留下的真实修改，讲它比讲上面的推演故事更稳。</div>
 </section>
 
 <!-- ═══ 11 性能 ═══ -->
@@ -587,7 +593,7 @@ void step(ChannelFSM *fsm, Event ev, int64_t now) {
     <div class="qmeta"><span class="qno">Q11.3</span><span class="tag deep">追</span></div>
     <div class="iv"><span class="who">面试官</span>内存呢？8 路 1080p 光帧缓冲就不少了吧，你算过账吗？板子多大内存？</div>
     <details class="cand"><summary>参考答案</summary><div class="body">
-      <p>算过。一帧 1080p NV12 = 1920×1080×1.5 ≈ <b>3.1MB</b>。解码端每路要留 DPB（参考帧缓冲，H.264 高profile 最多 16 帧，实际配置下一般 4–6 帧）加输出缓冲，每路算【6 帧 × 3.1MB ≈ 19MB】；8 路解码约 <b>150MB</b>。推理输入 640×640 的 RGA 输出池、显示端 EGLImage 引用的帧、录像编码前的缓冲——零拷贝的好处是很多环节<b>共享同一块</b>而不是各留一份，总账【实测：free 显示 __MB】。板子是【按实际：8GB/16GB】，扣除系统和其他进程，余量充足。</p>
+      <p>算过。一帧 1080p NV12 = 1920×1080×1.5 ≈ <b>3.1MB</b>。解码端每路要留 DPB（参考帧缓冲，H.264 高profile 最多 16 帧，实际配置下一般 4–6 帧）加输出缓冲，每路算【6 帧 × 3.1MB ≈ 19MB】；8 路解码约 <b>150MB</b>。推理输入 640×640 的 RGA 输出池、显示端纹理上传引用的帧、录像编码前的缓冲——零拷贝的好处是很多环节<b>共享同一块</b>而不是各留一份，总账【实测：free 显示 __MB】。板子是【按实际：8GB/16GB】，扣除系统和其他进程，余量充足。</p>
       <p>这里零拷贝的另一个价值就显出来了：如果每个环节都 memcpy 一份自己的，同样的链路内存占用至少翻两三倍——零拷贝不只是省 CPU，也<b>省内存带宽和容量</b>。</p>
     </div></details>
     <div class="probe"><b>考察点</b>：内存预算（memory budget）意识。资深嵌入式面试官的保留曲目——「张口就能算」和「没想过」之间隔着一级评价。</div>
@@ -641,13 +647,13 @@ void step(ChannelFSM *fsm, Event ev, int64_t now) {
     <tr><th>简历措辞（钩子）</th><th>诱出的提问</th><th>答案位置</th><th>深挖底线（第三层）</th></tr>
     <tr><td><b>SCM_RIGHTS 传递 DMA-BUF fd 跨进程零拷贝</b></td><td>零拷贝怎么实现 / SCM_RIGHTS 原理 / 为什么不用共享内存</td><td>Q1.2 / Q3.1–3.4</td><td>fd 引用计数生命周期 + cache 一致性 SYNC</td></tr>
     <tr><td><b>NPU 三核并行推理（按 worker 绑核）</b></td><td>三核怎么并行 / context 能否共享</td><td>Q6.1–6.2</td><td>context 非线程安全 + RGA 硬件预处理也在零拷贝链</td></tr>
-    <tr><td><b>SPSC RingBuffer + MPMC 无锁队列</b></td><td>无锁怎么做到 / ABA / 伪共享</td><td>Q6.3–6.5</td><td>release/acquire 内存序 + 坦白自己的简化取舍</td></tr>
-    <tr><td><b>检测状态机驱动自动启停录像</b></td><td>为什么用状态机 / 怎么实现</td><td>Q7.1–7.2</td><td>滞回防抖 + 表驱动 + 时间维度语义</td></tr>
+    <tr><td><b>SPSC RingBuffer + MPMC 无锁队列</b></td><td>无锁怎么做到 / ABA / 伪共享</td><td>Q6.3–6.5</td><td>计数器派覆盖式 + release/acquire 内存序 + rigtorp 有界队列为何天然无 ABA</td></tr>
+    <tr><td><b>检测状态机驱动自动启停录像</b></td><td>为什么用状态机 / 怎么实现</td><td>Q7.1–7.2</td><td>时间阈值防抖 + 流级聚合录像 + 位掩码事件</td></tr>
     <tr><td><b>GStreamer mppvideodec 硬解 8 路</b></td><td>pipeline 怎么搭 / 为什么解码 GStreamer 编码 FFmpeg</td><td>Q4.1–4.4</td><td>appsink 取回控制权 + 丢帧策略分消费者</td></tr>
     <tr><td><b>FFmpeg h264_rkmpp 硬编</b></td><td>主线没有 rkmpp 编码器（高危追问）</td><td>Q5.1</td><td>补丁构建/直调 MPP，二选一照实说</td></tr>
     <tr><td><b>SQLite WAL 模式多进程安全读写</b></td><td>WAL 是什么 / 为什么开</td><td>Q9.2</td><td>读写不互斥 + busy_timeout + 进程独立连接</td></tr>
     <tr><td><b>四进程分布式架构 / 8 条通道</b></td><td>为什么拆进程 / 为什么 8 条</td><td>Q2.2–2.4</td><td>故障隔离实测 + 通道优先级隔离理由</td></tr>
-    <tr><td><b>OpenGL NV12 纹理渲染</b></td><td>OpenGL 怎么吃 NV12</td><td>Q9.1</td><td>EGLImage + stride 坑 → 引出 S10 故事</td></tr>
+    <tr><td><b>OpenGL NV12 纹理渲染</b></td><td>OpenGL 怎么吃 NV12</td><td>Q9.1</td><td>mmap + R8/RG8 双纹理 + fragment shader 转 RGB + fd 生命周期 → 引出 S10 故事</td></tr>
     <tr><td><b>（隐藏钩）V4L2 + RTSP 双通道</b></td><td>为什么要两个输入通道</td><td>Q8.1</td><td>NPU 三核在两个 AI 任务间的全局分配</td></tr>
   </table>
   <div class="callout"><b>埋钩心法</b>：钩子只埋<b>你挖穿了的井</b>。本表 10 个钩子按你的准备度排序——S3（零拷贝）最厚实可以反复钓；S5.1（rkmpp）最危险，<b>没把握就在简历上改成「MPP 硬编码 + FFmpeg 封装」</b>，把坑拆掉。</div>
