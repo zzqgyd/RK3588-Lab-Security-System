@@ -1,0 +1,21 @@
+发现过程：程序运行一段时间后崩溃，日志出现 [Worker X] Warning: invalid dmabuf fd -1。
+GDB 调试显示崩溃在 RGA 或 MPP 内部，访问了已释放的 DMA-BUF fd。
+
+如何定位：分析数据流——GStreamer 解码器产生 DMA-BUF，
+Frame 通过 gst_sample 持有 GstBuffer 引用。
+问题在于 Frame 的 shared_ptr 在多个线程间共享（Worker、QT 显示、录像线程），
+如果某个线程提前释放了最后一个引用，
+Frame 析构 → gst_sample_unref → GstBuffer 释放 → DMA-BUF fd 失效。
+但其他线程可能还在使用这个 fd。
+
+解决方案：
+
+Frame 析构函数中先 munmap 再 gst_sample_unref，最后置 img.fd = -1
+
+RecorderTask 通过 FramePtr（shared_ptr）持有帧引用，录像编码期间 buffer 不被释放
+
+Worker 中 make_frame_shared 拷贝 shared_ptr，QT 显示和录像编码各持有一个引用，独立释放
+
+Worker 处理前检查 img.fd >= 0，无效帧直接跳过
+
+DMA-BUF 路径中使用 AVBufferRef + free_drm_frame_desc 回调管理 desc 内存，编码器通过 av_buffer_ref 持有引用

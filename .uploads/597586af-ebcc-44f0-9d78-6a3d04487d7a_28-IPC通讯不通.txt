@@ -1,0 +1,7 @@
+1. 信号量创建冲突 — 两进程都 O_EXCL
+问题：主进程和人脸进程都用 ipc_sem_open(..., true) 创建同一个信号量，后启动的进程 sem_open 失败，IPC 不通。
+
+解决：明确创建者。主进程创建 SEM_MAIN_FACE_*，人脸进程打开用 false。
+人脸进程创建 SEM_QT_FACE_*，QT 模拟器打开用 false。
+
+原则：谁创建谁 unlink，谁使用谁 close。创建方先启动。

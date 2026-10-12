@@ -1,0 +1,15 @@
+吞吐不够，前处理太快，导致前处理到推理部分的队列一直是满的
+
+// worker_pool.cpp preprocess_loop
+if (!pre_to_infer_queues_[worker_id]->try_enqueue(std::move(pre))) {
+    continue;  // 队列满
+}
+
+为什么4路正常，5路爆？
+路数	帧率	队列容量	状态
+4路	100fps	8	刚好够，偶尔满但不严重	（因为3线程推理池总吞吐约120不到）
+5路	125fps	8	持续满，try_enqueue 频繁失败     
+（增加1路就125fps/s，每s都有10fps左右的挤压，导致一会就满了，前处理线程调用 try_enqueue，队列满 → 内部自旋重试）
+自旋期间 CPU 100% 占用	5路时队列持续满 → 前处理线程持续自旋 → CPU 爆满
+
+解决办法，丢帧，增加推离线程数，减少预处理线程数

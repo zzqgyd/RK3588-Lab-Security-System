@@ -1,0 +1,33 @@
+for (int i = 0; i < 8; i++) {
+    ch->decoder = gst_decoder_create(...);  // 创建
+    gst_decoder_start(ch->decoder);         // 启动
+}
+for 循环在主线程中一次一次执行，不是 8 个线程同时跑。每次 start 内部的 gst_element_set_state(PLAYING) 是阻塞调用，
+等 pipeline 状态切换完成后才返回，然后才进入下一次循环。所以一开始拉流八路没问题
+
+
+on_bus_message 是每路独立回调，8 路 pipeline 各有自己的总线监听线程。
+
+当 8 路同时断开时：
+
+8 个线程同时进入 on_bus_message
+
+8 个线程同时执行 usleep(500000) — 但都在等，不算冲突
+
+0.5 秒后，8 个线程几乎同时醒来
+
+8 个线程并行执行 gst_object_unref + create_pipeline + set_state(PLAYING)
+
+同时向内核 MPP 驱动调用 ioctl() 申请硬件解码器 → MPP 驱动内部资源竞争 → 段错误。
+就是某个 mppvideodec 的 decoder 线程在操作硬件寄存器时，被另一个同时初始化的 mppvideodec 干扰了。
+
+
+解决方案：用 usleep(500000 + stream_id * 100000) 解决了，错开 0.1 秒就够 MPP 逐路初始化
+
+
+为什么错开 0.1 秒就好了
+gst_element_set_state(PLAYING) 内部流程：
+分配 MPP 解码上下文
+向驱动申请硬件解码器资源
+初始化解码器硬件寄存器
+这个过程约几十毫秒。错开 100ms 足够让前一路完成初始化、释放锁，后一路再开始，不冲突。

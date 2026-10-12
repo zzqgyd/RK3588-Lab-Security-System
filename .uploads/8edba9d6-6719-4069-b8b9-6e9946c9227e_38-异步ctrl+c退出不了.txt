@@ -1,0 +1,17 @@
+死锁现象
+Ctrl+C后，running_=false 通知所有线程退出。Post线程正在取队列消费，先退出循环。
+Infer线程推理完最后一帧后尝试往队列放入结果，但队列已满且Post已退出不再消费。
+Infer卡在 enqueue 内部的无限自旋中，永远等不到空位。
+主线程 join() 等Infer退出，但Infer永远不出来，主线程被挂起，Ctrl+C无效。
+
+根本原因
+MPMC队列的阻塞 push 不检查退出标志，线程一旦进入自旋就无法响应外部停止信号。
+线程不在 while(running_) 循环判断处，而是在 push 函数内部空转，收不到退出通知。
+
+死锁是因为 enqueue 在队列满时内部自旋，线程收不到退出信号
+try_enqueue 队列满时立即返回 false，线程回到循环检查 running_
+不再需要改其他任何地方
+
+解决方案
+用非阻塞 try_enqueue 替代阻塞 enqueue，队列满时直接返回false丢帧，
+线程不会被卡住，能回到循环头部检查 running_ 并正常退出。

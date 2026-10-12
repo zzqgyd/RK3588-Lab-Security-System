@@ -1,0 +1,32 @@
+virt_addr 只是地址（由内存池管理）	push(const T&) 足够，不需要移动语义
+结构体全是 POD 类型			编译器默认生成的拷贝/移动代码完全相同
+零拷贝已经在架构层面实现		队列只是传递"钥匙"，不是传递"房间"
+
+
+
+移动语义是为了解决拥有堆资源的对象的拷贝开销问题：
+// 例子：std::vector 的拷贝 vs 移动
+std::vector<int> a(1000000);  // 一百万个 int，约 4MB
+std::vector<int> b = a;       // 拷贝：深拷贝 4MB 数据
+std::vector<int> c = std::move(a);  // 移动：只复制三个指针，a 被清空
+对于 std::vector：
+拷贝：memcpy 整个堆内存（昂贵）
+移动：只交换内部的 start/finish/end 指针（廉价）
+
+对于你的 Frame，拷贝 vs 移动
+// 拷贝构造/赋值（编译器默认生成）
+Frame(const Frame& other) {
+    img = other.img;      // 逐 int/指针 复制，约 40 字节
+    pts = other.pts;      // 8 字节
+    stream_id = other.stream_id; // 4 字节
+}
+// 总计：复制约 52 字节
+
+// 移动构造/赋值（编译器默认生成）
+Frame(Frame&& other) {
+    img = std::move(other.img);      // 还是逐 int/指针 复制
+    pts = std::exchange(other.pts, 0);
+    stream_id = std::exchange(other.stream_id, 0);
+}
+// 总计：还是复制约 52 字节，外加几个清零操作（可能更慢）
+因为 image_buffer_t 的所有成员都是平凡类型（int/指针），std::move 对它们不起作用，回退为拷贝。

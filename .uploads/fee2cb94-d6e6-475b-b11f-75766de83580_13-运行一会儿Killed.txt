@@ -1,0 +1,4 @@
+回调malloc没free
+拷贝地方太多
+
+dmesg | tail -20  查看最近20行日志信息

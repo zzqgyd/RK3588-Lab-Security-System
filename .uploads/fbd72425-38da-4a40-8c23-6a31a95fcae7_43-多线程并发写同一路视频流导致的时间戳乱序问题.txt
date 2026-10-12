@@ -1,0 +1,13 @@
+发现过程：最初设计中，多个 Worker 线程从 MPMC 队列取帧后，
+都调用同一个 VideoRecorder 的 vr_feed_frame。
+虽然设计了 per-stream 架构（每路流一个录像线程），
+但早期版本中多个 Worker 可能同时向同一路流的录像队列投递帧任务。
+
+如何定位：通过日志观察到 MP4 文件播放时出现时间戳回跳、帧顺序错乱，ffplay 报 Non-monotonous DTS 警告。
+
+解决方案：采用 per-stream 独立录像线程架构（RecorderPool）。
+每路流一个 RecorderContext + 一个 recorder_loop 线程，
+该线程独占处理该路流的所有 RecorderTask。
+多个 Worker 通过 submit() 并发投递任务到 per-stream 的 MPMC 队列，
+但同一路流的帧始终由同一个录像线程串行处理，天然保证了时间戳顺序。
+配合 pthread_mutex_t enc_lock 保护编码器内部状态。
