@@ -1,0 +1,2 @@
+composite_2x2_rga_nv12显示没得到frame，以为是get/set_frame的问题
+实际上是使用的是dma_buf,vir_addr是空，这里有一个条件判断把frame过滤掉了

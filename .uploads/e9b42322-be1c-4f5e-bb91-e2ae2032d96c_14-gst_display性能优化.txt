@@ -1,0 +1,33 @@
+// 关键修复：创建缓冲区时拷贝数据，避免外部内存被释放
+    GstBuffer *buf = gst_buffer_new_allocate(NULL, size, NULL);
+    if (!buf) return;
+
+    GstMapInfo map;
+    if (gst_buffer_map(buf, &map, GST_MAP_WRITE)) {
+        memcpy(map.data, rgb_data, size);
+        gst_buffer_unmap(buf, &map);
+    }
+
+
+
+改为
+gst_buffer_new_wrapped_full()
+
+⚠ 前提
+
+你必须保证：
+
+rgb_data 生命周期 > GStreamer 使用周期
+
+
+
+
+2.时间戳	流控	
+自动初始化设计不合理	
+push → 自动 init
+👉 问题：
+多线程不安全
+初始化不可控
+✅ 建议
+强制：
+init → start → push

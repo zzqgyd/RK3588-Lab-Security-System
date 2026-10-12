@@ -1,0 +1,502 @@
+好的，以下是按面试形式整理的技术总结，直接可用。
+
+---
+
+## 项目：双屏异显显示服务 — DRM 性能与画面撕裂问题排查
+
+### 一、项目背景
+
+基于 Rockchip RK3588 平台，开发一个双屏显示进程：
+- **DSI 屏**（1024x600）：接收人脸检测帧，格式 YUYV
+- **HDMI 屏**（1920x1080）：接收监控画面帧，格式 NV12
+
+帧数据通过 Unix Socket + DMA-BUF 跨进程传递，显示端使用 DRM Atomic API 直接渲染到 Primary Plane，不经过 X11/Wayland。
+
+---
+
+### 二、遇到的第一个问题：画面延迟严重，刷新很慢
+
+**现象**：HDMI 画面有明显的卡顿感，帧率很低。
+
+**根因分析**：
+
+代码使用了同步提交方式：
+
+```cpp
+drmModeAtomicCommit(fd, req, 0, nullptr);  // 阻塞直到 VBlank
+```
+
+`drmModeAtomicCommit` 不带 `DRM_MODE_ATOMIC_NONBLOCK` 时，内核会阻塞当前线程直到下一次 VBlank 到来。HDMI 60Hz 的 VBlank 周期约 16.6ms，这意味着：
+
+1.  主循环每次提交一帧就被阻塞 16ms
+2.  DSI 和 HDMI 共用一个主循环，一个屏幕的提交阻塞会拖累另一个
+3.  即使帧数据来得很快，显示帧率也被 VBlank 锁死，且 CPU 被白白占用
+
+**解决方案**：
+
+改用非阻塞提交 + Page Flip 事件机制：
+
+```cpp
+// 1. 提交改为 NONBLOCK + PAGE_FLIP_EVENT
+drmModeAtomicCommit(fd, req,
+    DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_NONBLOCK, user_data);
+
+// 2. 主循环用 poll 同时监听 Socket 和 DRM fd
+struct pollfd fds[] = {
+    { .fd = drm_fd, .events = POLLIN },       // DRM VBlank 事件
+    { .fd = conn_dsi, .events = POLLIN },      // DSI 帧到达
+    { .fd = conn_hdmi, .events = POLLIN },     // HDMI 帧到达
+};
+
+// 3. 在 POLLIN 时调用 drmHandleEvent 处理 VBlank 完成回调
+drmEventContext ev_ctx = { .page_flip_handler = page_flip_handler };
+drmHandleEvent(fd, &ev_ctx);
+```
+
+**效果**：
+- `drmModeAtomicCommit` 调用后立即返回，不阻塞主循环
+- 主循环可以快速响应多个数据源
+- Page Flip 完成时通过回调通知，释放旧的 Framebuffer
+- 画面流畅度恢复正常，延迟问题解决
+
+---
+
+### 三、遇到的第二个问题：画面出现黑条/撕裂
+
+**现象**：HDMI 画面随机出现水平黑条或闪烁。
+
+**根因分析**：
+
+这不是显示侧的 VBlank 同步问题，而是 **跨进程 DMA-BUF 数据竞争**。
+
+显示进程的生命周期：
+
+```
+接收 dma_fd → 提交到 DRM → 等待 VBlank 完成 → 关闭 dma_fd
+```
+
+发送端（RGA 处理进程）的生命周期：
+
+```
+分配 DMA-BUF → RGA 写入画面 → 发送 fd → 立即重新分配/复用同一块内存 → 写入下一帧
+```
+
+问题在于：发送端在发送 fd 后，并没有等待显示端完成显示就复用了同一块物理内存。当显示控制器还在扫描这块内存时，RGA 已经覆盖了新数据，导致画面上出现新旧数据混合的"黑条"。
+
+**解决方案**：
+
+需要建立一个跨进程的 **Buffer 归还机制**：
+
+```
+发送端 → (发送 fd) → 显示端 → (提交 DRM) → (VBlank 完成) → (归还 fd) → 发送端 → (复用)
+```
+
+具体实现：
+1.  发送端为每个 DMA-BUF 创建一个 `eventfd` 作为"释放信号"
+2.  发送端通过 IPC 将 `(dma_fd, eventfd)` 一起发送给显示端
+3.  显示端在 `page_flip_handler` 中，确认该帧已上屏完成后，向 `eventfd` 写入 1，表示"该 Buffer 可以复用"
+4.  发送端在分配新 Buffer 前，先检查 `eventfd` 是否已通知，未通知则等待或使用备用的第三缓冲
+
+**效果**：
+- 彻底消除显示端和 RGA 写入端的竞争
+- 黑条/画面错乱问题解决
+- 实现了真正的三缓冲流水线同步
+
+---
+
+### 四、关键知识点总结
+
+| 知识点 | 说明 |
+|--------|------|
+| DRM Atomic + NONBLOCK | 提交不阻塞调用线程，必须配合 PAGE_FLIP_EVENT 使用 |
+| drmHandleEvent | 在 DRM fd 可读时调用，处理 VBlank 完成事件 |
+| DRM Master 规则 | `CREATE_DUMB`、`MAP_DUMB` 不需要 Master 权限，只有 KMS 操作（`SETCRTC`、`SETPLANE` 等）需要 |
+| DMA-BUF 跨进程同步 | `dma_fd` 传递的只是引用权，物理内存的读写同步必须通过额外的 IPC 机制保证 |
+| NV12 BPP 计算 | 名义上 12bpp（1.5 字节/像素），`drmModeAddFB2` 时按 Y plane 8bpp 设置 pitch，UV plane offset = stride × height |
+
+---
+
+### 五、如果面试官追问
+
+**Q：为什么不是缺 Buffer 导致的问题？**
+
+缺 Buffer 通常表现为帧丢失或帧率下降，不会表现为局部黑条。黑条说明同一块 Buffer 在扫描期间被修改，是数据竞争，不是数量不够。
+
+**Q：能不能用更大的 Buffer 池子解决？**
+
+可以缓解但无法根治。即使有 5 个 Buffer，如果发送端在释放信号到来之前就循环复用，依然可能在正好复用到"正在显示的那块"时出现黑条。必须要有明确的生产者-消费者同步机制。
+
+**Q：为什么测试时有时不出现？**
+
+帧率和时间窗口随机。如果某一帧的处理时间刚好错开了显示扫描期，就不会出现。这是一个经典的并发 Bug，需要在设计层面消除竞争。
+
+
+
+具体代码：只改主进程 `main.cpp` 的 canvas 部分，其他不变。
+
+---
+
+## 改动点
+
+```cpp
+// ===== 改前：单 buffer =====
+int canvas_fd = -1;
+int canvas_handle = 0;
+size_t canvas_actual_size = 0;
+void* canvas_vaddr = drm_buf_alloc(CANVAS_W * 3 / 2, CANVAS_H, 8, ...);
+
+// ===== 改后：双缓冲 =====
+#define NUM_CANVAS 2
+int      canvas_fd[NUM_CANVAS]     = {-1, -1};
+int      canvas_handle[NUM_CANVAS] = {0, 0};
+size_t   canvas_size[NUM_CANVAS]   = {0, 0};
+void*    canvas_vaddr[NUM_CANVAS]  = {NULL, NULL};
+int      canvas_idx = 0;   // 每帧翻转：0→1→0→1
+```
+
+主循环中取当前 buffer：
+
+```cpp
+canvas_idx ^= 1;                         // 0→1→0→1
+uint8_t* buf = (uint8_t*)canvas_vaddr[canvas_idx];
+int      fd  = canvas_fd[canvas_idx];
+size_t   sz  = canvas_size[canvas_idx];
+```
+
+后续所有 `canvas_vaddr` → `buf`，`canvas_fd` → `fd`，`canvas_actual_size` → `sz`。
+
+---
+
+## 完整代码（只替换 canvas 相关部分，其余不变）
+
+```cpp
+/**
+ * @file main_process/main.cpp
+ * @brief Phase 5C — 双缓冲 DMA-BUF canvas，消除读写冲突
+ *
+ * 问题：单块 canvas 被 RGA 覆盖写入时，DRM 可能还在 scanout 上一帧，
+ *       导致画面撕裂/黑条。
+ *
+ * 修复：双缓冲 canvas[2]，交替写入。
+ *       主进程写 canvas[0] 时，显示进程还在读 canvas[1]，
+ *       互不干扰，消除撕裂。
+ */
+
+#include <signal.h>
+#include <gst/gst.h>
+#include <unistd.h>
+#include <iostream>
+#include <cstdio>
+#include <memory>
+#include <vector>
+#include <cmath>
+
+#include "gst_decoder.h"
+#include "yolov5_infer.h"
+#include "common.h"
+#include "im2d.h"
+#include "RgaUtils.h"
+
+#include "queue_manager.hpp"
+#include "mpmc_queue.hpp"
+#include "scheduler.hpp"
+#include "worker_pool.hpp"
+#include "frame_pool.hpp"
+#include "config.h"
+
+#include "ipc/ipc_socket.h"
+#include "ipc/ipc_shm.h"
+#include "drm_alloc.h"
+
+extern void phase2_init(const char* db_path);
+extern void phase2_deinit();
+
+#define CONFIG_LINE_MAX    256
+#define CANVAS_W           1920
+#define CANVAS_H           1080
+#define WORKER_NUM         3
+#define FRAMES_PER_STREAM  3
+
+static volatile bool g_running = true;
+int g_main_disp_fd = -1;
+
+QueueManager* g_queue_manager = nullptr;
+MPMCQueue<FramePtr>* g_inference_queue = nullptr;
+Scheduler* g_scheduler = nullptr;
+WorkerPool* g_worker_pool = nullptr;
+
+base_model_context_t g_base_ctx = {0};
+worker_context_t g_worker_ctxs[WORKER_NUM] = {{0}};
+AppConfig g_cfg = {0};
+
+std::vector<std::unique_ptr<FramePool>> g_frame_pools;
+
+void sigint_handler(int sig) { g_running = false; }
+
+int load_config(const char *filename) {
+    FILE *f = fopen(filename, "r");
+    if (!f) return -1;
+    char line[CONFIG_LINE_MAX];
+    g_cfg.channel_count = 0;
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\n")] = 0;
+        if (strstr(line, "path ="))
+            sscanf(line, "path = %s", g_cfg.model_path);
+        if (strstr(line, "rtsp =")) {
+            ChannelContext *ch = &g_cfg.channels[g_cfg.channel_count];
+            ch->id = g_cfg.channel_count;
+            sscanf(line, "rtsp = %s", ch->rtsp);
+            g_cfg.channel_count++;
+        }
+    }
+    fclose(f);
+    printf("[Main] Config: %d channels, model=%s\n",
+           g_cfg.channel_count, g_cfg.model_path);
+    return 0;
+}
+
+int main(int argc, char *argv[]) {
+    signal(SIGINT, sigint_handler);
+    gst_init(NULL, NULL);
+    if (load_config("./config/config.ini") < 0) return -1;
+
+    // === 帧池 ===
+    for (int i = 0; i < g_cfg.channel_count; i++) {
+        auto pool = std::make_unique<FramePool>(FRAMES_PER_STREAM);
+        g_cfg.channels[i].frame_pool = pool.get();
+        g_frame_pools.push_back(std::move(pool));
+    }
+
+    // === 队列 + 调度 + Worker ===
+    g_queue_manager = new QueueManager();
+    g_inference_queue = new MPMCQueue<FramePtr>(256);
+    g_scheduler = new Scheduler(g_queue_manager, g_inference_queue, g_cfg.channel_count);
+    g_scheduler->start();
+
+    int ret = yolov5_init_base(&g_base_ctx, g_cfg.model_path);
+    if (ret < 0) return -1;
+    for (int i = 0; i < WORKER_NUM; i++)
+        yolov5_dup_worker_context(&g_base_ctx, &g_worker_ctxs[i], i);
+
+    g_worker_pool = new WorkerPool(WORKER_NUM, g_inference_queue,
+                                   g_worker_ctxs, g_cfg.channels, g_cfg.channel_count);
+    g_worker_pool->start();
+
+    // === Phase 2 ===
+    phase2_init("./records.db");
+
+    // === 连接显示进程 ===
+    g_main_disp_fd = ipc_sock_client_connect(SOCK_PATH_MAIN_DISP);
+    if (g_main_disp_fd < 0) printf("[Main] HDMI 显示未连接\n");
+
+    // === QT 显示模式共享内存 ===
+    QTToDisplayIPC* qt_disp = (QTToDisplayIPC*)ipc_shm_open(
+        SHM_NAME_QT_DISP, sizeof(QTToDisplayIPC), false);
+    if (qt_disp == MAP_FAILED) qt_disp = nullptr;
+
+    // ============================================================
+    // ★ 双缓冲 DMA-BUF canvas
+    //
+    // 两个独立的 DMA-BUF，交替写入。
+    // 写 canvas[0] 时推上一帧的 fd(canvas[1]) 给显示进程，
+    // 两者互不干扰。
+    //
+    // drm_buf_alloc(CANVAS_W * 3 / 2, CANVAS_H, 8):
+    //   输出 alloc_width=2880, height=1080, size=3110400
+    //   NV12 stride = 2880
+    // ============================================================
+    #define NUM_CANVAS 2
+    int      canvas_fd[NUM_CANVAS]     = {-1, -1};
+    int      canvas_handle[NUM_CANVAS] = {0, 0};
+    size_t   canvas_size[NUM_CANVAS]   = {0, 0};
+    void*    canvas_vaddr[NUM_CANVAS]  = {NULL, NULL};
+    int      canvas_idx = 0;   // 当前写入索引，每帧翻转
+
+    for (int i = 0; i < NUM_CANVAS; i++) {
+        canvas_vaddr[i] = drm_buf_alloc(
+            CANVAS_W * 3 / 2, CANVAS_H, 8,
+            &canvas_fd[i],
+            &canvas_handle[i],
+            &canvas_size[i], 0);
+
+        if (!canvas_vaddr[i]) {
+            printf("[Main] drm_buf_alloc[%d] failed\n", i);
+            return -1;
+        }
+        printf("[Main] DMA-BUF canvas[%d]: fd=%d size=%zu\n",
+               i, canvas_fd[i], canvas_size[i]);
+    }
+
+    // === 启动解码器 ===
+    for (int i = 0; i < g_cfg.channel_count; i++) {
+        ChannelContext* ch = &g_cfg.channels[i];
+        ch->decoder = gst_decoder_create(ch->rtsp, NULL, (void*)(intptr_t)i);
+        gst_decoder_start(ch->decoder);
+    }
+
+    printf("[Main] === 运行中 ===\n");
+
+    // ================================================================
+    // 主循环
+    // ================================================================
+    while (g_running) {
+        g_main_context_iteration(NULL, FALSE);
+
+        int mode = qt_disp ? qt_disp->display_mode : 0;
+        int single_id = qt_disp ? qt_disp->single_stream_id : 0;
+
+        if (g_main_disp_fd >= 0 && g_cfg.channel_count > 0) {
+
+            // ★ 翻转双缓冲索引：0→1→0→1...
+            canvas_idx ^= 1;
+            uint8_t* buf = (uint8_t*)canvas_vaddr[canvas_idx];
+            int      fd  = canvas_fd[canvas_idx];
+            size_t   sz  = canvas_size[canvas_idx];
+
+            // ---- 清空 Y 平面 ----
+            memset(buf, 0, CANVAS_W * CANVAS_H);
+            // ---- UV 平面填中性灰 ----
+            memset(buf + CANVAS_W * CANVAS_H, 128,
+                   sz - CANVAS_W * CANVAS_H);
+
+            // RGA dst：使用当前 fd
+            rga_buffer_t dst;
+            if (fd >= 0) {
+                dst = wrapbuffer_fd(fd, CANVAS_W, CANVAS_H,
+                                    RK_FORMAT_YCbCr_420_SP);
+            } else {
+                dst = wrapbuffer_virtualaddr(buf, CANVAS_W, CANVAS_H,
+                                              RK_FORMAT_YCbCr_420_SP);
+            }
+
+            if (mode == 0) {
+                // ===== 多路拼接 2×2 =====
+                int cols = 2, rows = 2;
+                int cell_w = CANVAS_W / cols, cell_h = CANVAS_H / rows;
+
+                for (int i = 0; i < g_cfg.channel_count && i < 4; i++) {
+                    FramePtr f = g_cfg.channels[i].get_frame();
+                    if (!f || !f->img.virt_addr) continue;
+
+                    float scale = fminf((float)cell_w / f->img.width,
+                                        (float)cell_h / f->img.height);
+                    int dw = ((int)(f->img.width  * scale)) & ~1;
+                    int dh = ((int)(f->img.height * scale)) & ~1;
+                    int ox = ((cell_w - dw) / 2) & ~1;
+                    int oy = ((cell_h - dh) / 2) & ~1;
+                    int dx = (i % cols) * cell_w + ox;
+                    int dy = (i / cols) * cell_h + oy;
+
+                    rga_buffer_t src;
+                    if (f->is_dmabuf && f->img.fd >= 0) {
+                        src = wrapbuffer_fd(f->img.fd,
+                                            f->img.width, f->img.height,
+                                            RK_FORMAT_YCbCr_420_SP,
+                                            f->img.width_stride,
+                                            f->img.height_stride);
+                    } else {
+                        src = wrapbuffer_virtualaddr(
+                            f->img.virt_addr,
+                            f->img.width, f->img.height,
+                            RK_FORMAT_YCbCr_420_SP,
+                            f->img.width_stride,
+                            f->img.height_stride);
+                    }
+                    im_rect src_rect = {0, 0, f->img.width, f->img.height};
+                    im_rect dst_rect = {dx, dy, dw, dh};
+                    improcess(src, dst, {}, src_rect, dst_rect, {}, 0);
+                }
+
+            } else if (mode == 1 && single_id < g_cfg.channel_count) {
+                // ===== 单路全屏 =====
+                FramePtr f = g_cfg.channels[single_id].get_frame();
+                if (f && f->img.virt_addr) {
+                    float scale = fminf((float)CANVAS_W / f->img.width,
+                                        (float)CANVAS_H / f->img.height);
+                    int dw = ((int)(f->img.width  * scale)) & ~1;
+                    int dh = ((int)(f->img.height * scale)) & ~1;
+                    int dx = (CANVAS_W - dw) / 2;
+                    int dy = (CANVAS_H - dh) / 2;
+
+                    rga_buffer_t src;
+                    if (f->is_dmabuf && f->img.fd >= 0) {
+                        src = wrapbuffer_fd(f->img.fd,
+                                            f->img.width, f->img.height,
+                                            RK_FORMAT_YCbCr_420_SP,
+                                            f->img.width_stride,
+                                            f->img.height_stride);
+                    } else {
+                        src = wrapbuffer_virtualaddr(
+                            f->img.virt_addr,
+                            f->img.width, f->img.height,
+                            RK_FORMAT_YCbCr_420_SP,
+                            f->img.width_stride,
+                            f->img.height_stride);
+                    }
+                    im_rect src_rect = {0, 0, f->img.width, f->img.height};
+                    im_rect dst_rect = {dx, dy, dw, dh};
+                    improcess(src, dst, {}, src_rect, dst_rect, {}, 0);
+                }
+            }
+
+            // ★ 推帧：传当前 fd
+            FrameMeta meta;
+            memset(&meta, 0, sizeof(meta));
+            meta.width     = CANVAS_W;
+            meta.height    = CANVAS_H;
+            meta.stride_w  = CANVAS_W;
+            meta.stride_h  = CANVAS_H;
+            meta.format    = 0;          // NV12
+            meta.size      = sz;
+            meta.stream_id = -1;
+            meta.detection_count = 0;
+            ipc_sock_send_frame(g_main_disp_fd, &meta, fd);
+        }
+
+        usleep(30000);
+    }
+
+    // === 清理 ===
+    printf("\n[Main] Shutting down...\n");
+    if (g_worker_pool) { g_worker_pool->stop(); delete g_worker_pool; }
+    if (g_scheduler)   { g_scheduler->stop();   delete g_scheduler;   }
+    if (g_inference_queue) delete g_inference_queue;
+
+    for (int i = 0; i < g_cfg.channel_count; i++) {
+        if (g_cfg.channels[i].decoder) {
+            gst_decoder_stop(g_cfg.channels[i].decoder);
+            gst_decoder_destroy(g_cfg.channels[i].decoder);
+        }
+        g_cfg.channels[i].set_frame(nullptr);
+    }
+    for (int i = 0; i < WORKER_NUM; i++) yolov5_release_worker(&g_worker_ctxs[i]);
+    yolov5_release_base(&g_base_ctx);
+    phase2_deinit();
+    if (g_queue_manager) delete g_queue_manager;
+    g_frame_pools.clear();
+
+    // 释放双缓冲 canvas
+    for (int i = 0; i < NUM_CANVAS; i++) {
+        if (canvas_fd[i] >= 0) {
+            drm_buf_destroy(canvas_fd[i], canvas_handle[i],
+                            canvas_vaddr[i], canvas_size[i]);
+        }
+    }
+    if (g_main_disp_fd >= 0) close(g_main_disp_fd);
+    printf("[Main] Done\n");
+    return 0;
+}
+```
+
+---
+
+## 改动说明
+
+| 改动 | 说明 |
+|------|------|
+| `canvas_fd[2]` | 两个独立 DMA-BUF，交替写入 |
+| `canvas_idx ^= 1` | 每帧翻转索引 |
+| `buf/fd/sz` | 每帧指向不同 buffer |
+| 推帧传 `fd` | 每次传不同 fd，显示进程收到的每帧是不同的底层内存 |
+
+**显示进程不改。** 它收到不同的 fd 就创建不同的 FB，VBlank 切换时不会读到正在被主进程覆盖的内存。

@@ -1,0 +1,9 @@
+	152 FEATURE:
+		flags: immutable bitmask
+		values: scale=0x1 afbdc=0x10
+		value: 17
+
+17 (即 0x01 | 0x10)
+
+immutable 意味着这个属性是写死的，无法更改。value: 17 明确代表 scale (缩放) 和 afbdc 两个特性已启用。
+那么这个对应的plane就只支持afbc

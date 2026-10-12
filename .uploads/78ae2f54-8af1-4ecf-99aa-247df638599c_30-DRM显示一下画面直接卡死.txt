@@ -1,0 +1,23 @@
+没有// 显式归还指定缓冲区（外部帧管理用）
+int V4L2Camera::qbuf(int index) {
+    if (fd_ < 0 || index < 0 || index >= num_buffers_) return -1;
+
+    struct v4l2_buffer return_buf = {0};
+    return_buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    return_buf.memory = V4L2_MEMORY_MMAP;
+    return_buf.index  = index;
+
+    if (ioctl(fd_, VIDIOC_QBUF, &return_buf) < 0) {
+        perror("[V4L2] QBUF");
+        return -1;
+    }
+
+    // 如果归还的正好是当前持有的缓冲区，清除持有标志
+    if (index == current_buf_index_ && buffer_owned_) {
+        buffer_owned_ = false;
+    }
+
+    return 0;
+}
+
+VIDIOC_REQBUFS分配的四个缓冲区立马用尽卡死

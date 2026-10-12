@@ -1,0 +1,19 @@
+脚本在 /home/xxx/project
+脚本里写 ./lib
+→ 无论在哪执行，都找 /home/xxx/project/lib
+
+错误！！！！！
+
+./lib 永远等于：当前你在哪个文件夹，就从哪个文件夹找 lib   而不是脚本在哪个位置在哪个位置找
+
+
+
+# 固定写法，获取脚本自身所在目录
+SCRIPT_DIR=$(cd $(dirname "${BASH_SOURCE[0]}") && pwd)
+
+# 然后以脚本目录为基准找 lib
+export LD_LIBRARY_PATH=$SCRIPT_DIR/lib:$LD_LIBRARY_PATH
+
+
+✅ 要环境变量生效 = 必须用 source /.
+❌ 直接 ./ 运行 = 环境变量不生效	因为是开子进程执行，不传递变量
