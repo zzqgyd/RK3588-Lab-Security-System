@@ -1,0 +1,64 @@
+============================================================
+问题：GStreamer 断流重连与总线事件处理
+============================================================
+
+【背景】
+系统通过 GStreamer 采集多路 RTSP 摄像头视频流，送入 RK3588 MPP 硬件
+解码，再经 RGA 转换后喂给 NPU 推理。RTSP 流因网络抖动会偶发断流，
+需要自动重连。
+
+【具体问题】
+1. RTSP 断流后 pipeline 挂在 EOS 状态，不自动恢复
+2. 重连逻辑放在 GStreamer bus 回调里，回调中操作 pipeline 会死锁
+3. 多路流同时断流时，重连逻辑竞争资源
+
+【排查过程】
+1. 现象：摄像头重启后画面不恢复，pipeline 状态显示 PAUSED
+2. GST_DEBUG 日志：看到 EOS 事件但无重连动作
+3. 代码审查：重连代码在 bus watch 回调里直接调用 gst_element_set_state
+4. GStreamer 文档：bus 回调在 GST 主线程，操作 pipeline 会死锁
+
+【解决方案】
+
+1. bus 回调只发信号，重连在独立线程做
+  static GstBusSyncReply onBusMessage(GstBus* bus, GstMessage* msg, gpointer data) {
+    switch (GST_MESSAGE_TYPE(msg)) {
+      case GST_MESSAGE_EOS:
+      case GST_MESSAGE_ERROR:
+        // 不要在这里操作 pipeline！
+        g_atomic_int_set(&need_reconnect[stream_id], 1);
+        break;
+    }
+    return GST_BUS_PASS;
+  }
+
+2. 独立线程轮询重连标志
+  void reconnectThread() {
+    while (running) {
+      for (int i = 0; i < stream_count; i++) {
+        if (g_atomic_int_get(&need_reconnect[i])) {
+          gst_element_set_state(pipeline[i], GST_STATE_NULL);
+          usleep(100000);  // 100ms 间隔
+          gst_element_set_state(pipeline[i], GST_STATE_PLAYING);
+          g_atomic_int_set(&need_reconnect[i], 0);
+        }
+      }
+      usleep(500000);  // 500ms 轮询
+    }
+  }
+
+3. 重连退避：连续失败时指数退避，避免疯狂重连
+  int delay = base_delay * (1 << min(fail_count, 5));  // 1s, 2s, 4s, 8s, 16s, 32s
+
+【关键点】
+- GStreamer bus 回调在主线程，不能直接操作 pipeline 状态
+- 跨线程操作 pipeline 必须用 g_main_context_iteration 或独立线程
+- RTSP 断流要区分网络断开和正常 EOS，处理方式不同
+- 多路流重连要串行化，避免同时建连冲击 NPU
+
+【面试要点】
+- GStreamer 总线机制：bus 回调在 GST 主线程，不能阻塞
+- 跨线程操作 pipeline 用独立线程 + 状态标志，不要在回调里直接改状态
+- RTSP 断流重连要有退避策略，避免风暴式重连
+- 硬件解码器（MPP）状态管理要严谨，NULL → PLAYING 要有间隔
+- 音视频系统要假设"流随时会断"，重连是必备能力

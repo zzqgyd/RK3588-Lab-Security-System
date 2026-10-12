@@ -1,0 +1,61 @@
+============================================================
+问题：持有 mutex 调用 miio RPC 导致 IPC 超时 + SIGPIPE 崩溃
+============================================================
+
+【背景】
+device_process 同时承担两个职责：
+  1. 通过 TCP 与智能插座通信（miio RPC，可能阻塞数秒）
+  2. 通过 Unix Socket 与 main_process 通信（IPC 事件）
+
+为防止多 worker 线程并发 send 导致 ack 串台，加了一把 g_device_mutex
+保护 send + recv 的原子性。
+
+【具体问题】
+早期实现中，mutex 保护范围过大，把 miio RPC 也包在里面：
+  lock(g_device_mutex);
+  miio_rpc_call(...);   // 可能阻塞 3-5 秒
+  unlock(g_device_mutex);
+
+后果：
+1. RPC 期间 mutex 被占用，其他 worker 的 IPC send 全部阻塞
+2. main_process 端 phase2_poll_device 用 try_lock，长时间拿不到锁
+3. main 的 send buffer 填满 → mpmc_full
+4. RPC 期间对端关闭 socket → send 返回 EPIPE → 默认触发 SIGPIPE → 进程崩溃
+
+【排查过程】
+1. 现象：偶发进程崩溃，日志尾部有 mpmc_full
+2. core dump 分析：崩溃点在 send() 内，信号 SIGPIPE
+3. 代码审查：发现 mutex 持有期间调用了阻塞 RPC
+4. 时间线对照：RPC 耗时 3s，期间 IPC 完全停滞
+
+【解决方案】
+1. Lock-free RPC 模式：mutex 只保护本地 IPC 的 send，不保护 RPC
+   - RPC 调用移出临界区
+   - RPC 结果通过内部队列回传给 IPC 线程
+
+2. 忽略 SIGPIPE：
+   signal(SIGPIPE, SIG_IGN);
+   - send 失败返回 EPIPE 而不是杀进程
+   - 应用层检测返回值处理断连
+
+3. 缩小临界区：mutex 只包 send 本身，不包 recv（ack 异步消费）
+
+伪代码：
+  // 错误做法
+  lock(mtx);
+  rpc_result = miio_rpc(...);  // 阻塞 3 秒，持锁太久
+  send(ipc_fd, rpc_result);
+  unlock(mtx);
+
+  // 正确做法
+  rpc_result = miio_rpc(...);  // 不持锁
+  lock(mtx);
+  send(ipc_fd, rpc_result);    // 只锁 send
+  unlock(mtx);
+
+【面试要点】
+- 临界区内绝不能调用可能阻塞的外部 I/O（网络 RPC、磁盘 I/O）
+- 锁的粒度要最小化，只保护真正需要互斥的操作
+- SIGPIPE 是网络编程常见陷阱，进程级 signal(SIGPIPE, SIG_IGN) 是标配
+- 音视频系统对延迟敏感，任何 3 秒阻塞都会引发管线雪崩
+- 多线程 + 网络 I/O 是嵌入式音视频最常见的并发场景

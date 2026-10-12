@@ -1,0 +1,42 @@
+// 模态对话框会启动局部事件循环
+QInputDialog::getText(...);  // 内部调用 dialog->exec() → 局部事件循环
+→ 主事件循环被阻塞 → 输入法插件收不到 QInputMethodEvent
+    → 键盘弹出但点击无效
+
+
+// ❌ 原代码（模态，阻塞事件循环）
+QString name = QInputDialog::getText(this, "标题", "提示", QLineEdit::Normal, "", &ok);
+
+// ✅ 修复后（非模态，事件循环正常）
+QInputDialog* dialog = new QInputDialog(this);
+dialog->setWindowTitle("人脸录入");
+dialog->setLabelText("请输入姓名:");
+dialog->setModal(false);                    // ★ 非模态
+dialog->setAttribute(Qt::WA_DeleteOnClose); // 自动释放
+
+connect(dialog, &QInputDialog::accepted, [this, dialog]() {
+    QString name = dialog->textValue();
+    // 处理输入结果
+});
+
+dialog->show();  // ★ 用 show() 而非 exec()
+
+面试回答模板
+面试官："你们嵌入式设备上 Qt 输入法怎么实现的？遇到过什么问题？"
+
+回答：
+
+我们 RK3588 平台用 Qt 5.15 做人脸识别终端，DSI 触摸屏需要中文输入。
+选型上对比了 qtvirtualkeyboard 和 tgtsml。前者虽然官方但依赖 QML 组件，
+我们项目是纯 C++ Widget，所以选了后者——它基于 Google 拼音内核，
+以 Qt 插件形式加载
+
+遇到一个比较棘手的问题：用 QInputDialog::getText() 弹模态对话框时，
+键盘能弹出但点击无效。排查发现模态对话框的 exec() 启动了局部事件循环，
+阻塞了主事件循环，导致输入法插件的 QInputMethodEvent 无法传递给焦点控件。
+
+解决方案是把所有输入弹窗改成非模态——用 new 创建 QInputDialog，
+设置 setModal(false)，通过 show() 显示，用信号槽接收结果。这样主事件循环不被阻塞，输入法正常工作。
+
+这个问题的本质是对 Qt 事件循环机制和输入法插件工作原理的理解——
+输入法依赖主事件循环来传递 QInputMethodEvent，任何阻塞主循环的操作都会导致输入法失效。

@@ -1,0 +1,62 @@
+============================================================
+问题：IPC 阻塞 send 导致 worker 卡死 → fire-and-forget 重构
+============================================================
+
+【背景】
+main_process 的 worker 线程检测到设备区域有人时，要通知 device_process
+执行 REGISTER。早期实现是同步请求-响应：
+  worker: send(REGISTER)
+  worker: recv(ack)        // 阻塞等待 device 处理完
+
+【具体问题】
+1. device_process 处理 REGISTER 涉及 MQTT 通知 ESP32，耗时不可控
+2. worker 阻塞在 recv 期间，MPMC 队列积压 → mpmc_full
+3. device 端如果死循环（如 MSG_PEEK bug），worker 永远收不到 ack
+4. 多 worker 同时等 ack 时，mutex 串行化导致只有一个能推进
+
+【排查过程】
+1. 现象：worker 线程疑似卡死，日志无推进
+2. pstack 分析：worker 阻塞在 recv() 上
+3. 架构反思：REGISTER 是幂等事件，没必要等 ack
+4. 重新设计：worker 只管发，ack 异步消费
+
+【解决方案：fire-and-forget】
+
+worker 端（生产者）：
+  bool send_device_event(event, room, device, duration) {
+    unique_lock<mutex> lk(mtx, try_to_lock);
+    if (!lk.owns_lock()) return false;       // 锁忙就丢
+    if (fd < 0) return false;
+    send(fd, &pkt, sizeof(pkt), MSG_DONTWAIT);  // 非阻塞 send
+    return true;
+    // ★ 不 recv，不等 ack
+  }
+
+主循环（消费者，独立线程）：
+  void phase2_poll_device() {
+    if (!mtx.try_lock()) return;
+    for (int i = 0; i < 32; i++) {
+      // peek-then-consume 模式读 ack
+      recv(fd, &tag, 4, MSG_PEEK | MSG_DONTWAIT);
+      // 根据 tag 读 payload，ack 读完即丢
+    }
+    mtx.unlock();
+  }
+
+【设计要点】
+1. 事件幂等性：REGISTER/RELEASE 丢一次没关系，下次还会重试
+2. try_lock 而非 lock：锁忙时丢弃事件，绝不阻塞 worker
+3. MSG_DONTWAIT：socket buffer 满时丢弃，绝不阻塞
+4. ack 异步消费：主循环每轮 drain 最多 32 条，防止积压
+
+【效果】
+- worker 线程从"阻塞 3-5 秒"变为"亚毫秒返回"
+- 即使 device_process 完全卡死，main 仍能正常推理和显示
+- MPMC 队列不再积压，mpmc_full 消失
+
+【面试要点】
+- 音视频系统中的 IPC 要遵循"绝不阻塞生产者"原则
+- fire-and-forget 适用于幂等事件，不适用于强一致请求
+- try_lock + MSG_DONTWAIT 是非阻塞 IPC 的标准组合
+- ack 异步消费解耦了请求和响应，提升系统韧性
+- 架构层面解耦比单点优化更有效

@@ -1,0 +1,29 @@
+问题描述
+程序运行一段时间后崩溃，报错：
+
+text
+GLib-ERROR: Creating pipes for GWakeup: Too many open files
+问题发现
+日志显示 8 路流正常启动、断流重连均成功，但在某次重连后触发该错误。
+查看系统文件描述符限制为默认 1024，而程序同时运行了：
+
+8 个 GStreamer pipeline（每个含 rtspsrc、mppvideodec 等多个元素）
+
+8 个 Recorder 线程
+
+6 个 Worker 线程
+
+多个 MPMC 无锁队列
+
+问题定位
+将 MPMC_CAPACITY 从 512 降回 256 后问题消失。
+MPMC 无锁队列内部使用 eventfd 或 socketpair 等文件描述符实现同步，
+队列容量越大占用的 fd 越多。8 路 stream × 多个 MPMC 队列
+（per-stream 录像队列 + 全局推理队列）的 fd 总数超过系统 1024 上限。
+
+解决方案
+将 MPMC_CAPACITY 保持为 256，在丢帧率和 fd 占用之间取得平衡。
+
+cpp
+// config.h
+#define MPMC_CAPACITY       256   // 512→256，避免 fd 耗尽

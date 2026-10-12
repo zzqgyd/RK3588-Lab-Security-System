@@ -1,0 +1,16 @@
+问题5：断流重连要等待近半分钟才能检测到断流
+发现过程：推流端关闭后，程序约 30-60 秒后才打印 [Decoder] stream X EOS，
+期间 Worker 日志停止输出（无新帧），但没有任何断流提示。
+
+如何定位：GStreamer rtspsrc 默认 timeout=0（无限等待）。TCP 连接断开后，
+如果没有设置超时，rtspsrc 会一直阻塞在 recv() 等待数据。
+实际检测时间取决于 TCP keepalive（默认 7200 秒）或服务端的 RST 包。
+
+解决方案：在 create_pipeline 中为 rtspsrc 添加参数：
+
+rtspsrc location=%s latency=0 timeout=5000000 protocols=tcp !
+timeout=5000000：5 秒收不到数据即触发 EOS/ERROR（微秒单位）
+
+protocols=tcp：强制 TCP 协议，连接断开时 TCP 栈能更快检测到
+
+修复后断流检测时间从 30+ 秒缩短到约 5 秒，加上 0.5~1.2 秒的错开重连延迟，总计约 6 秒恢复。

@@ -1,0 +1,63 @@
+============================================================
+问题：Unix Socket MSG_PEEK 按长度匹配导致协议失步死循环
+（引发 MPMC 队列满 + HDMI 显示卡死）
+============================================================
+
+【背景】
+RK3588 多进程监控系统，主进程(main_process) 与 设备进程(device_process)
+通过 Unix Socket 双向 IPC。ESP32 集成后，main → device 方向需要传输两种
+结构体：
+  - DeviceEvent(16 字节)：设备登记/释放事件
+  - Esp32RecognizeResult(88 字节)：人脸识别结果
+
+【具体问题】
+device_process 的 handleMainConnection 线程使用 MSG_PEEK 按缓冲区总长度
+区分消息类型：
+  if (n == 16) → 当作 DeviceEvent
+  if (n == 88) → 当作 Esp32RecognizeResult
+  else         → usleep(1000) 重试
+
+当两条 DeviceEvent 在 socket 缓冲区合并到达时，MSG_PEEK 返回 32 字节，
+既不等于 16 也不等于 88，device 线程进入无限 usleep 死循环，永远不消费
+数据。
+
+【连锁反应】
+1. device 不消费 → 不回 ack
+2. main 的 send buffer 填满 → worker 线程的 send() 阻塞
+3. worker 线程阻塞 → MPMC 推理队列积压
+4. 队列满 → 主进程打印 "MPMC queue full, dropping frame"
+5. 帧被丢弃 → GStreamer 显示管线无帧可推 → HDMI 画面卡死
+
+【排查过程】
+1. 现象观察：device_process 一启动就卡死，先开推流时 HDMI 直接冻屏
+2. 日志定位：main 持续打印 mpmc_full，device 端无 ack 日志
+3. 代码审查：发现 device 的 handleMainConnection 用 MSG_PEEK 按长度
+   区分消息，意识到多消息合并场景下长度永远不匹配
+4. 验证假设：单条消息场景下系统正常，多消息并发时必复现 → 确认根因
+
+【解决方案】
+废弃 MSG_PEEK 长度匹配方案，改为 Tag-based 协议：
+
+main → device 方向：
+  发送：[4字节 tag][payload]
+  tag=0: DeviceEvent(16B)
+  tag=1: Esp32RecognizeResult(88B)
+
+device 端读取：
+  1. recv(tag, 4字节, MSG_WAITALL)  // 阻塞读满 4 字节
+  2. 根据 tag 确定 payload 大小
+  3. recv(payload, N字节, MSG_WAITALL)  // 阻塞读满 N 字节
+
+【进阶优化】
+为防止 tag 和 payload 分两次 send 时对端只读到半条，进一步合并为
+单次 send：
+  struct { int tag; DeviceEvent ev; } pkt;
+  pkt.tag = 0; pkt.ev = ev;
+  send(fd, &pkt, sizeof(pkt), MSG_DONTWAIT);
+
+【面试要点】
+- Unix Socket 是流式协议，没有消息边界，多条消息会合并
+- MSG_PEEK 不消费数据，但返回长度受缓冲区现有数据量影响
+- 协议设计必须用长度前缀或类型 tag，不能依赖"一条消息一次到达"
+- 多线程 IPC 必须用 MSG_DONTWAIT 避免阻塞，否则会级联卡死整个管线
+- 音视频系统对延迟敏感，一个 IPC 卡点会引发整条管线雪崩

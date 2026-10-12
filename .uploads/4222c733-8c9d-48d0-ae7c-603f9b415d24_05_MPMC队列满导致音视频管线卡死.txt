@@ -1,0 +1,66 @@
+============================================================
+问题：MPMC 队列满导致音视频推理管线卡死（mpmc_full）
+============================================================
+
+【背景】
+系统架构：GStreamer 采集 → MPMC 队列 → 多 worker 线程 YOLO 推理
+        → ROI 检测 + 状态机 → 录像 + 显示
+
+MPMC 队列是生产者-消费者模型，生产者是 GStreamer 采集线程（每路 30fps），
+消费者是 3 个 worker 线程（NPU 推理）。
+
+【具体问题】
+当 worker 线程因任何原因阻塞（IPC、DB、RPC），推理速度跟不上采集速度，
+MPMC 队列积压，队列满后丢弃帧：
+  [Worker] MPMC queue full, dropping frame
+
+连锁反应：
+1. 帧被丢弃 → 显示管线无新帧 → HDMI 画面冻屏
+2. 录像管线拿不到帧 → 录像断断续续
+3. ROI 检测漏帧 → 设备登记漏触发
+
+【排查过程】
+1. 现象：HDMI 画面突然卡死，日志持续打印 mpmc_full
+2. 时间线对照：卡死时刻与 device_process 启动时刻吻合
+3. 反向追踪：device_process 启动 → ESP32 模块初始化 → IPC 连接
+   → device 端 handleMainConnection 死循环 → main 的 send 阻塞
+   → worker 阻塞 → MPMC 满
+4. 根因：device 端一个 bug 级联引发 main 的 worker 全部阻塞
+
+【解决方案层次】
+
+层次1（治标）：队列满时非阻塞丢弃
+  // 采集线程
+  if (!queue.try_enqueue(frame)) {
+    printf("mpmc_full, dropping\n");
+    frame.reset();  // 释放引用
+  }
+
+层次2（治本）：确保 worker 线程绝不阻塞
+  - 所有 IPC send 用 MSG_DONTWAIT
+  - 所有锁用 try_lock，拿不到就丢弃
+  - DB 操作用 WAL + busy_timeout
+
+层次3（架构）：fire-and-forget 解耦
+  - worker 只负责 send，不等 ack
+  - ack 由独立的主循环线程异步消费
+  - 即使对端卡死，worker 也能继续推理
+
+【关键代码模式】
+  // worker 端：所有操作非阻塞
+  std::unique_lock<std::mutex> lk(mtx, std::try_to_lock);
+  if (!lk.owns_lock()) return false;  // 锁忙就丢
+  send(fd, &pkt, sizeof(pkt), MSG_DONTWAIT);  // 非阻塞 send
+
+  // 主循环端：异步消费 ack
+  for (int i = 0; i < 32; i++) {
+    if (recv(fd, &tag, 4, MSG_PEEK|MSG_DONTWAIT) < 4) break;
+    // peek-then-consume 模式
+  }
+
+【面试要点】
+- 音视频管线是流水线，任何一个环节阻塞都会引发雪崩
+- MPMC 队列要有背压机制：满时丢弃 + 告警，不能阻塞生产者
+- worker 线程要遵循"绝不阻塞"原则：所有 I/O 非阻塞，锁用 try_lock
+- 排查管线卡死要从队列满反向追踪到第一个阻塞点
+- NPU 推理是瓶颈，worker 阻塞会立即放大为整条管线卡死

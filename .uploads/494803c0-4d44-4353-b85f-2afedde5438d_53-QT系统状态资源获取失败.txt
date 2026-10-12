@@ -1,0 +1,30 @@
+问题1：权限问题 — NPU/RGA 无法读取
+现象：QT 程序以普通用户运行，无法读取 /sys/kernel/debug/rknpu/load 和 /sys/kernel/debug/rkrga/load，
+返回 "Permission denied"。
+
+解决方案：
+// 使用 QProcess 调用 sudo 读取
+QString readFileWithSudo(const QString& path) {
+    QProcess process;
+    process.start("/usr/bin/sudo", QStringList() << "cat" << path);
+    process.waitForFinished(500);
+    return process.readAllStandardOutput().trimmed();
+}
+同时配置 sudo 免密码：
+# /etc/sudoers 添加
+elf ALL=(ALL) NOPASSWD: /bin/cat /sys/kernel/debug/rknpu/load, /bin/cat /sys/kernel/debug/rkrga/load
+面试话术：我通过 QProcess 调用 sudo 命令来读取受保护的系统节点，并配置了 sudo 免密码规则，
+解决了权限问题。这种方式比直接修改文件权限更安全，不需要把程序跑在 root 下。
+
+
+
+问题2：CPU 使用率计算方式选择
+现象：最初使用 top 命令逐核心获取 CPU 使用率，每次更新需要启动 8 个进程，导致 HDMI 画面卡顿。
+解决方案：改用 /proc/stat 文件，一次性读取所有核心数据，通过两次采样的差值计算使用率。
+// 一次性读取全部 8 个核心
+QString content = readFile("/proc/stat");
+// 解析 cpu0-cpu7 的 user/nice/system/idle
+// 两次采样差值计算使用率
+面试话术：我一开始用 top 命令逐核心获取 CPU 数据，但每次更新要启动 8 个进程，开销太大导致画面卡顿。
+后来改用直接读取 /proc/stat 文件，一次性获取所有核心数据，通过两次采样的差值计算使用率，既准确又高效，
+彻底解决了卡顿问题。

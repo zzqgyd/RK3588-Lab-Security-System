@@ -1,0 +1,13 @@
+问题现象
+8路1080p@30fps视频，通过 dma-buf 传递帧，网格模式正常，切换到全屏时出现：
+
+text
+Too many open files
+failed to export dumb buffer
+Segmentation fault
+
+HDMIMainWindow::updateFrame	主进程传来的 fd 只 dup 没 close
+
+paintGL 直接用 m_frameFd，不 dup	渲染线程和更新线程共享同一个 fd，一方 close 另一方就用到了无效 fd
+
+dma-buf 跨线程传递，每个线程 dup 自己的 fd，用完自己 close，锁只保护元数据一致性，close 放锁外。

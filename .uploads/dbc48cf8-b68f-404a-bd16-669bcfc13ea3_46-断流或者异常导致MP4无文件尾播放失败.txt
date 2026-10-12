@@ -1,0 +1,17 @@
+问题4：断流或者异常导致 MP4 无文件尾播放失败
+发现过程：推流端断开后，录像文件用 ffplay 播放报 moov atom not found，无法打开。
+
+如何定位：标准 MP4 格式的 moov box（索引表）在 av_write_trailer 时才写入文件末尾。
+断流或程序崩溃时 vr_stop 未被调用 → av_write_trailer 未执行 → moov 缺失 → 整个文件不可播放。
+
+解决方案：
+
+采用 fragmented MP4 格式：av_opt_set(ofmt_ctx->priv_data, "movflags",
+ "frag_keyframe+empty_moov+default_base_moof")。
+每个关键帧写入独立的 moof+mdat fragment，已写入的 fragment 可独立解码播放
+
+断流时自动停止录像：在 on_bus_message 的 ERROR/EOS 分支中，
+先调用 g_recorder_pool->submit(RecorderTask::make_stop(...)) 通知录像线程 flush 编码器、写 trailer、关闭文件
+
+vr_destroy 兜底：vr_destroy 中检测 recording==true 时自动调用 vr_stop，
+确保即使漏掉 STOP 任务也能在程序退出时正常关闭文件

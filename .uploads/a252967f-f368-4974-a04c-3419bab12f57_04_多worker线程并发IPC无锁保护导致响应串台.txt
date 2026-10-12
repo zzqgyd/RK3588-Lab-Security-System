@@ -1,0 +1,60 @@
+============================================================
+问题：多 Worker 线程并发访问 IPC Socket 无锁保护导致响应串台
+============================================================
+
+【背景】
+main_process 有多个 worker 线程并行做 YOLO 推理，每个 worker 检测到
+设备区域有人时，要通过同一个 Unix Socket fd 向 device_process 发送
+REGISTER 事件并等待 ack。
+
+【具体问题】
+早期实现：
+  // worker 线程 A
+  send(fd, eventA);
+  recv(fd, ack);      // 期望收到 A 的 ack
+
+  // worker 线程 B（同时）
+  send(fd, eventB);
+  recv(fd, ack);      // 期望收到 B 的 ack
+
+由于 Unix Socket 是流式的，且多个线程共享同一 fd：
+  - A 的 send 和 B 的 send 可能交错（TCP 保证字节序但不管业务边界）
+  - A 可能看到 B 的 ack，B 看到到 A 的 ack
+  - 设备状态显示混乱（房间错位、设备错位）
+
+【排查过程】
+1. 现象：QT 界面偶尔显示错误的设备状态（房间0 显示房间1 的设备）
+2. 日志分析：同一时间多个 worker 并发 send，ack 的 room_id 对不上
+3. 复现：在 ROI 区域同时触发多个设备登记时必现
+4. 根因：send + recv 不是原子操作，多线程并发会乱序
+
+【解决方案】
+1. 用 mutex 串行化 send + recv：
+   lock(g_device_mutex);
+   send(fd, event);
+   recv(fd, ack);
+   unlock(g_device_mutex);
+
+2. 后续优化为 fire-and-forget：
+   - send 时只加锁 send 本身，不等待 ack
+   - ack 由主循环的 phase2_poll_device 异步消费
+   - worker 线程完全不阻塞
+
+伪代码：
+  // 锁保护版
+  lock(mtx);
+  send(fd, &ev, sizeof(ev));
+  recv(fd, &ack, sizeof(ack));  // 必须收到自己的 ack
+  unlock(mtx);
+
+  // fire-and-forget 版（最终方案）
+  lock(mtx);
+  send(fd, &tag, &ev);  // 只锁 send
+  unlock(mtx);
+  // ack 由主循环 drain，worker 不等
+
+【面试要点】
+- 多线程共享 socket fd 必须加锁，send+recv 要作为原子操作
+- Unix Socket 流式特性不保证业务消息边界，只保证字节序
+- 异步 fire-and-forget 模式可以解耦生产者和消费者，避免线程阻塞
+- 调试技巧：打印 ack 的 room_id/device_id 与 request 对照，快速定位串台

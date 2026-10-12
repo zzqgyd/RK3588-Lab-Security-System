@@ -1,0 +1,59 @@
+============================================================
+问题：智能插座连接后默认 ON → 安全策略要求默认 OFF
+============================================================
+
+【背景】
+米家 cuco.plug.v3 智能插座通过 miio LAN 协议接入。设备登记流程：
+  用户人脸识别 → 登记成功 → 开插座 + 启动倒计时 → 时间到关插座
+
+安全策略要求：插座默认关闭，只有登记成功后才打开。
+
+【具体问题】
+device_process 启动后连接插座，插座恢复连接后默认处于 ON 状态，
+即使没有用户登记也在供电，违反安全策略。
+
+【排查过程】
+1. 现象：device_process 启动后，未登记的设备指示灯亮起（ON）
+2. miio 协议分析：cuco.plug.v3 有 "default-power-on" 属性（piid=2-2）
+   - 0=OFF, 1=ON, 2=记忆上次状态
+   - 当前设置为 1（默认 ON）
+3. 代码审查：addPlug 连接成功后没有主动 setPower(false)
+
+【解决方案】
+
+方案1（代码层）：连接成功后强制关闭
+  int DeviceManager::addPlug(...) {
+    auto plug = std::make_shared<MiotPlug>(...);
+    if (plug->connect()) {
+      plug->cancelCountdown();   // 清除可能残留的倒计时
+      plug->setPower(false);     // 强制关闭
+      plugs_[key] = plug;
+    }
+  }
+
+方案2（设备层，持久化）：设置 default-power-on 为 OFF
+  miio RPC: set_properties [{siid:2, piid:2, value:0}]
+  → 设备重启后默认 OFF，无需代码干预
+
+【最佳实践：两层都做】
+1. 设备层设置 default-power-on=OFF（持久化兜底）
+2. 代码层 connect 后主动 setPower(false)（运行时保证）
+
+【相关安全考虑】
+- 删除插座时：先 setPower(false) 再 remove（强制断电）
+- 手动断电（QT）：通过 main_process 转发 RELEASE，清状态 + 关插座
+- 倒计时超时：device_process 主动关插座 + 通知 main 清状态
+- 异常重启：device_process 启动时关闭所有插座（安全策略）
+
+  // device_process 启动安全策略
+  for (auto& plug : plugs_) {
+    plug->cancelCountdown();
+    plug->setPower(false);
+  }
+
+【面试要点】
+- IoT 设备控制要有"安全默认"原则：默认 OFF，明确操作才 ON
+- 设备的持久化属性（default-power-on）和运行时状态要分开管理
+- 连接成功后主动同步状态，不能假设设备状态符合预期
+- 删除/释放资源时要做"清理动作"（断电、清计时），不能只删记录
+- 异常恢复（进程重启）要有安全策略，不能恢复到"全部 ON"状态

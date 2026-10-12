@@ -1,0 +1,52 @@
+============================================================
+问题：SQLite 多进程并发访问配置（WAL + busy_timeout）
+============================================================
+
+【背景】
+系统有 4 个进程共享同一个 records.db：
+  - main_process：写入录像任务、设备状态
+  - qt_face_ui：查询设备状态、ROI 配置
+  - face_process：读写人脸特征库
+  - device_process：读写插座配置、ESP32 配置、心跳状态
+
+SQLite 默认是 journal_mode=DELETE，多进程并发写会频繁锁冲突。
+
+【具体问题】
+1. 多进程同时写时出现 "database is locked" 错误
+2. 默认 busy_timeout=0，锁冲突立即返回错误而非等待
+3. WAL 模式未开启时，读写互斥，QT 查询会阻塞 main 的写入
+
+【排查过程】
+1. 现象：偶发 "database is locked" 错误日志
+2. SQLite 文档：默认模式写时会锁整个数据库，其他进程读写全阻塞
+3. 验证：并发压测 4 进程同时写，必现锁错误
+
+【解决方案】
+所有进程打开 DB 时统一执行：
+  PRAGMA journal_mode=WAL;       // WAL 模式，读写不互斥
+  PRAGMA busy_timeout=3000;      // 锁冲突等待 3 秒
+  PRAGMA synchronous=NORMAL;     // WAL 下 NORMAL 足够安全
+
+WAL 模式优势：
+  - 读不阻塞写，写不阻塞读
+  - 写入仍然串行（单写者），但读可以并发
+  - 崩溃恢复更快（WAL 文件 + checkpoint）
+
+关键代码：
+  void db_open(const char* path) {
+    sqlite3_exec(db, "PRAGMA journal_mode=WAL;", 0, 0, 0);
+    sqlite3_exec(db, "PRAGMA busy_timeout=3000;", 0, 0, 0);
+    sqlite3_exec(db, "PRAGMA synchronous=NORMAL;", 0, 0, 0);
+  }
+
+【进一步优化】
+- 每个进程用 prepared statement，避免重复解析 SQL
+- 写操作用事务批量提交，减少锁次数
+- 长查询放独立线程，避免阻塞主循环
+
+【面试要点】
+- SQLite 适合嵌入式多进程共享，但必须正确配置并发模式
+- WAL 是 SQLite 并发的关键，读写不互斥
+- busy_timeout 是防止"锁冲突即报错"的关键，默认 0 太激进
+- synchronous=NORMAL 在 WAL 下足够安全，FULL 会严重影响性能
+- 多进程共享 DB 要统一配置，任何一个进程配置不对都会拖累全局

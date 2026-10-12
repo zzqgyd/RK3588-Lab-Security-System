@@ -1,0 +1,74 @@
+============================================================
+问题：ESP32 被动识别 30 秒超时与状态机设计
+============================================================
+
+【背景】
+ESP32 摄像头用于被动人脸识别登记流程：
+  main 检测到设备区域有人 → 通知 device → MQTT 通知 ESP32
+  → ESP32 等用户按按钮确认 → 推 RTSP 流 → face_process 识别
+  → 结果回传 → 开插座
+
+【具体问题】
+1. 如果用户不按按钮，ESP32 会一直等，任务永远不结束
+2. 如果用户按了按钮但识别失败，状态如何流转
+3. 多个任务并发时如何管理
+
+【状态机设计】
+
+任务状态枚举：
+  kWaitReady    - 等待 ESP32 推流确认（30s 超时）
+  kRecognizing  - 推流中，等待识别结果
+  kDone         - 完成（成功或失败）
+  kTimeout      - 超时取消
+
+状态流转：
+  [创建] → kWaitReady
+              │
+              ├── ESP32 event/ready → kRecognizing
+              │                          │
+              │                          ├── 识别结果回传 → kDone
+              │                          │
+              │                          └── (无超时，依赖 face_process)
+              │
+              └── 30s 超时 → kTimeout → 通知 main 取消
+
+【超时检测线程】
+  void checkTaskTimeout() {
+    int64_t now = now_ms();
+    for (auto& [id, task] : tasks_) {
+      if (task.state == kWaitReady &&
+          now - task.create_ts_ms > 30000) {
+        task.state = kTimeout;
+        // MQTT 通知 ESP32 取消
+        publishCmd(room_id, "cancel", {task_id, reason:"timeout"});
+        // 通知 main 取消登记
+        notifyMain({type: kCancelRegister, ...});
+      }
+    }
+  }
+
+【关键设计决策】
+
+1. 超时只在 kWaitReady 状态触发
+   - kRecognizing 状态不超时，依赖 face_process 最终会回结果
+   - 如果 face_process 挂了，任务会卡在 kRecognizing（可接受，不影响其他任务）
+
+2. 超时后双重通知
+   - MQTT 通知 ESP32（让 ESP32 停止等待，回到空闲）
+   - IPC 通知 main（让 main 清检测状态，允许下次触发）
+
+3. 任务并发控制
+   - 同一房间同一时间只允许一个被动登记任务
+   - 新任务来时检查是否有 kWaitReady 任务，有则拒绝或覆盖
+
+4. ESP32 确认按钮的必要性
+   - 防止误触发（人路过就触发识别浪费资源）
+   - 用户主动确认才推流，节省 ESP32 带宽
+   - 30s 超时自动取消，防止任务堆积
+
+【面试要点】
+- 涉及外部设备交互的流程必须有超时机制，防止永久等待
+- 状态机是管理异步流程的经典模式，状态流转要清晰
+- 超时后要通知所有相关方（ESP32 + main），不能只清本地状态
+- 嵌入式系统资源有限，要控制并发任务数，防止堆积
+- 用户确认机制可以避免误触发，是 IoT 交互设计的常见模式

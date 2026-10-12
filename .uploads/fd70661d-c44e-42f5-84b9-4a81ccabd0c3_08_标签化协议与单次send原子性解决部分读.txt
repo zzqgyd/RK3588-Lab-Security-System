@@ -1,0 +1,66 @@
+============================================================
+问题：IPC 协议部分读导致失步 → 标签化协议 + 单次 send 原子性
+============================================================
+
+【背景】
+main_process 与 device_process 的双向 IPC 传输多种结构体。早期 main 端
+读取 device 的消息时，tag 和 payload 分两次 recv（MSG_DONTWAIT）：
+  recv(fd, &tag, 4, MSG_DONTWAIT);       // 读 tag
+  recv(fd, &payload, N, MSG_DONTWAIT);   // 读 payload
+
+【具体问题】
+非阻塞模式下，两次 recv 之间可能只有 tag 到达，payload 尚未到达：
+  第一次 recv：返回 4，读到 tag
+  第二次 recv：返回 EAGAIN（payload 没到）
+  → break 跳出循环，tag 已消费但 payload 没读
+
+下次循环时，payload 的前 4 字节被误读为新 tag → 协议彻底失步。
+
+【排查过程】
+1. 现象：偶发协议失步，device 发的消息 main 解析出乱码 tag
+2. 代码审查：发现 tag 和 payload 分两次 MSG_DONTWAIT recv
+3. 推理：非阻塞模式下两次 recv 之间数据可能不连续
+4. 验证：高压并发时必现，低压时正常
+
+【解决方案：三层防御】
+
+层次1：peek-then-consume（main 端读取）
+  // 先 peek 整条消息，确认全部到齐才消费
+  recv(fd, &tag, 4, MSG_PEEK | MSG_DONTWAIT);   // peek tag，不消费
+  size_t total = 4 + payload_size[tag];
+  char buf[256];
+  n = recv(fd, buf, total, MSG_PEEK | MSG_DONTWAIT);  // peek 整条
+  if (n < total) break;  // 没到齐，不消费任何字节
+  // 到齐了，正式消费
+  recv(fd, &tag, 4, MSG_DONTWAIT);
+  recv(fd, &payload, N, MSG_DONTWAIT);
+
+层次2：单次 send 原子性（发送端）
+  // 合并 tag + payload 到单次 send，减少半条消息概率
+  struct { int tag; DeviceEvent ev; } pkt;
+  pkt.tag = 0; pkt.ev = ev;
+  send(fd, &pkt, sizeof(pkt), MSG_DONTWAIT);  // 一次发完
+
+层次3：MSG_WAITALL（device 端读取，阻塞模式）
+  // device 端用阻塞 socket，MSG_WAITALL 确保读满
+  recv(fd, &tag, 4, MSG_WAITALL);
+  recv(fd, &payload, N, MSG_WAITALL);
+
+【三种模式对比】
+  MSG_PEEK       - 看但不消费，适合"检查是否到齐"
+  MSG_WAITALL    - 阻塞直到读满指定字节数，适合阻塞 socket
+  MSG_DONTWAIT   - 非阻塞，没数据立即返回 EAGAIN
+
+【设计原则】
+1. 阻塞 socket：用 MSG_WAITALL，简单可靠
+2. 非阻塞 socket：用 peek-then-consume，避免半读
+3. 发送端：合并消息到单次 send，提升原子性
+4. 协议设计：用长度前缀或 tag，不要依赖"一条一次到达"
+
+【面试要点】
+- Unix Socket 流式特性不保证消息边界，应用层必须自己定边界
+- 非阻塞 recv 可能返回部分数据，必须处理"半读"情况
+- peek-then-consume 是非阻塞 IPC 的经典模式
+- MSG_WAITALL 是阻塞 IPC 的简化方案，确保读满
+- 单次 send 不能 100% 保证原子性（内核可能分段），但大幅降低半读概率
+- 协议鲁棒性是嵌入式系统稳定性的基石
